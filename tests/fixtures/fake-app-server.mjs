@@ -50,6 +50,7 @@ lines.on('line', (line) => {
     if (match) {
       const name = match[1]
       if (String(params.keyPath).endsWith('.enabled')) connectorConfig[name] = { ...(connectorConfig[name] || {}), enabled: Boolean(params.value) }
+      else if (params.value === null) delete connectorConfig[name]
       else connectorConfig[name] = params.value
     }
     return send({ id, result: { status: 'ok', version: 'fake-version' } })
@@ -69,7 +70,10 @@ lines.on('line', (line) => {
     return send({ method: 'thread/started', params: { thread } })
   }
   if (method === 'thread/name/set') return send({ id, result: {} })
+  if (method === 'thread/memoryMode/set') return send({ id, result: {} })
+  if (method === 'thread/delete') return send({ id, result: {} })
   if (method === 'turn/interrupt') return send({ id, result: {} })
+  if (method === 'turn/steer') return send({ id, result: {} })
   if (method === 'turn/start') {
     const turnId = `turn_fake_${nextTurn++}`
     const text = `FAKE_RESPONSE: ${params.input?.[0]?.text || ''}`

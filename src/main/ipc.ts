@@ -60,6 +60,17 @@ const routineInputSchema = z.object({
   notifyPolicy: z.enum(['always', 'failure', 'never']),
   skillPath: z.string().startsWith('/').nullable().optional()
 })
+const workspaceInputSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  objective: z.string().trim().min(1).max(2_000),
+  currentOwnerAgentId: idSchema,
+  memberIds: z.array(idSchema).min(1).max(50),
+  autoCoordinate: z.boolean()
+})
+const memoryPolicySchema = z.object({
+  mode: z.enum(['enabled', 'disabled']),
+  retentionDays: z.number().int().min(1).max(3_650).nullable()
+})
 const guiStepSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('activateApp') }),
   z.object({ type: z.literal('wait'), durationMs: z.number().int().min(100).max(10_000) }),
@@ -125,10 +136,19 @@ export function registerIpc(service: CodexService, system: IpcSystemActions): vo
   })
   ipcMain.handle('chat:cancel', (_event, runId) => service.cancelRun(idSchema.parse(runId)))
   ipcMain.handle('approvals:resolve', (_event, approvalId, decision) => service.resolveApproval(idSchema.parse(approvalId), z.enum(['approve', 'decline', 'cancel']).parse(decision)))
+  ipcMain.handle('approvals:ask', (_event, approvalId, question) => service.askApprovalQuestion(idSchema.parse(approvalId), z.string().trim().min(1).max(2_000).parse(question)))
+  ipcMain.handle('approvals:editAndApprove', (_event, approvalId, input) => service.editAndApproveApproval(idSchema.parse(approvalId), z.string().max(100_000).parse(input)))
+  ipcMain.handle('workspaces:create', (_event, input) => service.createWorkspace(workspaceInputSchema.parse(input)))
+  ipcMain.handle('workspaces:update', (_event, id, input) => service.updateWorkspace(idSchema.parse(id), workspaceInputSchema.parse(input)))
+  ipcMain.handle('workspaces:setStatus', (_event, id, status) => service.setWorkspaceStatus(idSchema.parse(id), z.enum(['active', 'completed', 'archived']).parse(status)))
+  ipcMain.handle('workspaces:startTask', (_event, id, prompt) => service.startWorkspaceTask(idSchema.parse(id), z.string().trim().min(1).max(100_000).parse(prompt)))
   ipcMain.handle('connectors:refresh', () => service.refreshIntegrations())
   ipcMain.handle('connectors:add', (_event, input) => service.addConnector(connectorInputSchema.parse(input)))
+  ipcMain.handle('connectors:update', (_event, name, input) => service.updateConnector(connectorNameSchema.parse(name), connectorInputSchema.parse(input)))
+  ipcMain.handle('connectors:remove', (_event, name) => service.removeConnector(connectorNameSchema.parse(name)))
   ipcMain.handle('connectors:setEnabled', (_event, name, enabled) => service.setConnectorEnabled(connectorNameSchema.parse(name), z.boolean().parse(enabled)))
   ipcMain.handle('connectors:login', (_event, name) => service.loginConnector(connectorNameSchema.parse(name)))
+  ipcMain.handle('connectors:logout', (_event, name) => service.logoutConnector(connectorNameSchema.parse(name)))
   ipcMain.handle('skills:refresh', () => service.refreshIntegrations())
   ipcMain.handle('skills:review', (_event, path, status, notes) => service.reviewSkill(z.string().startsWith('/').parse(path), z.enum(['unreviewed', 'reviewed', 'blocked']).parse(status), z.string().trim().max(2_000).nullable().optional().parse(notes) ?? null))
   ipcMain.handle('skills:setEnabled', (_event, path, enabled) => service.setSkillEnabled(z.string().startsWith('/').parse(path), z.boolean().parse(enabled)))
@@ -139,6 +159,21 @@ export function registerIpc(service: CodexService, system: IpcSystemActions): vo
   ipcMain.handle('routines:delete', (_event, id) => service.deleteRoutine(idSchema.parse(id)))
   ipcMain.handle('notifications:markRead', (_event, id) => service.markNotificationRead(idSchema.parse(id)))
   ipcMain.handle('notifications:markAllRead', () => service.markAllNotificationsRead())
+  ipcMain.handle('memories:add', (_event, agentId, content) => service.addAgentMemory(idSchema.parse(agentId), z.string().trim().min(1).max(20_000).parse(content)))
+  ipcMain.handle('memories:setPolicy', (_event, agentId, input) => service.setAgentMemoryPolicy(idSchema.parse(agentId), memoryPolicySchema.parse(input)))
+  ipcMain.handle('memories:delete', (_event, id) => service.deleteAgentMemory(idSchema.parse(id)))
+  ipcMain.handle('memories:clear', (_event, agentId) => service.clearAgentMemories(idSchema.parse(agentId)))
+  ipcMain.handle('memories:deleteThread', (_event, agentId) => service.deleteAgentThread(idSchema.parse(agentId)))
+  ipcMain.handle('memories:export', async (_event, agentId) => {
+    const exported = service.getAgentMemoryExport(idSchema.parse(agentId))
+    const safeName = exported.agent.name.replace(/[^A-Za-z0-9 _.-]/g, '').trim().slice(0, 80) || 'Agent'
+    const result = process.env.SPLITTBOT_TEST_MEMORY_EXPORT_PATH
+      ? { canceled: false, filePath: process.env.SPLITTBOT_TEST_MEMORY_EXPORT_PATH }
+      : await dialog.showSaveDialog({ title: 'Export agent memory', defaultPath: join(system.defaultBackupDirectory, `${safeName} Memory.md`), filters: [{ name: 'Markdown', extensions: ['md'] }] })
+    if (result.canceled || !result.filePath) return null
+    await writePrivateFile(result.filePath, Buffer.from(exported.content, 'utf8'))
+    return { path: result.filePath }
+  })
   ipcMain.handle('shortcuts:prepare', (_event, agentId, name, input) => service.prepareShortcut(idSchema.parse(agentId), z.string().trim().min(1).max(180).parse(name), z.string().max(100_000).parse(input)))
   ipcMain.handle('gui:refreshPermissions', () => service.refreshGuiPermissions())
   ipcMain.handle('gui:requestPermission', (_event, kind) => service.requestGuiPermission(z.enum(['accessibility', 'screenRecording']).parse(kind)))
@@ -150,6 +185,9 @@ export function registerIpc(service: CodexService, system: IpcSystemActions): vo
   ipcMain.handle('gui:emergencyStop', () => service.emergencyStopGui())
   ipcMain.handle('gui:resetEmergencyStop', () => service.resetGuiEmergencyStop())
   ipcMain.handle('gui:evidenceDataUrl', (_event, id) => service.guiEvidenceDataUrl(idSchema.parse(id)))
+  ipcMain.handle('acceptance:refreshPermissions', () => service.refreshAcceptancePermissions())
+  ipcMain.handle('acceptance:exerciseIMessage', () => service.exerciseIMessageAcceptance())
+  ipcMain.handle('acceptance:exerciseWakeCatchUp', () => service.exerciseWakeCatchUp())
   ipcMain.handle('artifacts:create', (_event, input) => {
     const parsed = z.object({ agentId: idSchema, runId: idSchema.nullable().optional(), name: z.string().trim().min(1).max(180), content: z.string().min(1).max(1_000_000) }).parse(input)
     return service.createArtifact(parsed)

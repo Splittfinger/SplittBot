@@ -2,7 +2,7 @@
 
 SplittBot is a working Mac application for a team of persistent Codex agents. Each agent has a name, role, avatar, working instructions, model, AI effort, approved local boundaries, and a persistent Codex thread.
 
-This repository contains the working Phase 0–4 desktop app plus the first Phase 5 lifecycle and image-attachment controls, research, and product/technical design:
+This repository contains the working Phase 0–5 desktop app, research, and product/technical design:
 
 - [Grok Bot research brief](docs/grok-bot-research.md)
 - [SplittBot product and UX design](docs/splittbot-design.md)
@@ -12,6 +12,7 @@ This repository contains the working Phase 0–4 desktop app plus the first Phas
 - [Phase 3 implementation handoff](docs/phase-3-handoff.md)
 - [Phase 4 implementation handoff](docs/phase-4-handoff.md)
 - [Phase 5 roadmap](docs/phase-5-roadmap.md)
+- [Phase 5 real-Mac acceptance record](docs/phase-5-acceptance.md)
 
 ## Current implementation
 
@@ -26,6 +27,10 @@ Phase 3 adds opt-in macOS Accessibility and Screen Recording checks, exact struc
 Phase 4 adds the public GitHub source-control baseline, macOS CI, dependency monitoring, a branded app icon, a Developer ID/notarization-ready release workflow, private database backup and validated restore with a safety copy, version visibility, artifact export, and deletion of routines with their attempt history. Public release builds still require repository secrets backed by the owner's Apple Developer credentials.
 
 The first Phase 5 slice makes the composer attachment control functional for up to four local PNG, JPEG, or WebP images per direct agent turn. The main process validates file signatures and size, keeps absolute paths out of the renderer and audit log, and revalidates each image immediately before sending it to the installed Codex App Server as typed `localImage` input. Generic document attachments remain pending a supported local-file input shape.
+
+Phase 5 also adds durable group workspaces with an explicit owner, selected members, a unified handoff/contribution timeline, mentioned-agent-only coordination by default, and deliberate automatic-team opt-in. Approval cards show structured impact fields, can steer an active Codex turn with a question without approval, and allow edit-and-approve only for revalidated Shortcut text. User-configured connectors can be edited, reconnected, disconnected, and safely removed; active granted work blocks removal. Each agent now has explicit local memory notes, Codex memory mode, retention, export, note deletion, and persistent-thread deletion controls.
+
+Settings includes a durable real-Mac acceptance dashboard. It distinguishes live ChatGPT/runtime evidence from deterministic tests, reads the exact packaged bundle’s macOS permission state, performs a local iMessage status/search/draft check without calling send, records OAuth revoke only after it succeeds, and keeps recovery-code execution separate from a real observed sleep/wake cycle.
 
 Tagged collaboration is enforced by the app rather than simulated in one prompt. Each receiving agent runs in its own persistent thread with its own selected model, AI effort, working directory, sandbox, grants, and approval flow. SplittBot records the handoff and gives the returned contribution to the primary agent for a final synthesis.
 
@@ -105,6 +110,6 @@ The first production slice should include:
 7. Per-agent connector, file, command, and application permissions.
 8. Visible approval prompts, pause/takeover/emergency stop, and one serialized lane for GUI automation. **Implemented in Phase 3.**
 9. Source control, CI, branded packaging, recovery, and notarization-ready releases. **Implemented in Phase 4; Apple credentials are required to publish.**
-10. Image attachments, group workspaces, richer approvals, connector lifecycle, and explicit memory/retention controls. **Phase 5 image attachments are implemented; the remaining slices are planned.**
+10. Image attachments, group workspaces, richer approvals, connector lifecycle, and explicit memory/retention controls. **Implemented in Phase 5. Real-Mac permission, OAuth, and sleep/wake outcomes remain evidence-gated per machine.**
 
 Prefer MCP, provider APIs, Shortcuts, Apple Events, and command-line interfaces over screen clicking. Accessibility/screen-based control should be enabled only when no structured integration is suitable and remains separately gated per agent and per plan.

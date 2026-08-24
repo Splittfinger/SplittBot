@@ -33,6 +33,8 @@ export interface Agent {
   cwd: string
   accessMode: AgentAccessMode
   threadId: string | null
+  memoryMode: 'enabled' | 'disabled'
+  memoryRetentionDays: number | null
   grants: AgentGrants
   createdAt: string
   updatedAt: string
@@ -90,11 +92,20 @@ export interface Approval {
   method: string
   title: string
   summary: string
+  impact: ApprovalImpact
   request: Record<string, unknown>
   status: ApprovalStatus
   decision: string | null
   createdAt: string
   resolvedAt: string | null
+}
+
+export interface ApprovalImpact {
+  targetResource: string
+  dataLeavingMac: string
+  reversibility: string
+  afterApproval: string
+  editableFields: string[]
 }
 
 export interface Artifact {
@@ -165,12 +176,69 @@ export interface Connector {
   canGrant: boolean
   toolCount: number
   resourceCount: number
+  userConfigured: boolean
+  transport: 'stdio' | 'streamableHttp' | 'runtime'
+  endpoint: string | null
+  args: string[]
   error: string | null
 }
 
 export type ConnectorInput =
   | { name: string; transport: 'stdio'; command: string; args: string[] }
   | { name: string; transport: 'streamableHttp'; url: string }
+
+export interface Workspace {
+  id: string
+  name: string
+  objective: string
+  status: 'active' | 'completed' | 'archived'
+  currentOwnerAgentId: string
+  memberIds: string[]
+  autoCoordinate: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkspaceInput {
+  name: string
+  objective: string
+  currentOwnerAgentId: string
+  memberIds: string[]
+  autoCoordinate: boolean
+}
+
+export interface WorkspaceEvent {
+  id: string
+  workspaceId: string
+  runId: string | null
+  agentId: string | null
+  type: 'created' | 'updated' | 'task' | 'handoff' | 'contribution' | 'ownerChanged' | 'completed' | 'note'
+  summary: string
+  detail: Record<string, unknown>
+  createdAt: string
+}
+
+export interface AgentMemory {
+  id: string
+  agentId: string
+  content: string
+  source: 'user' | 'agent'
+  createdAt: string
+}
+
+export interface AgentMemoryPolicyInput {
+  mode: 'enabled' | 'disabled'
+  retentionDays: number | null
+}
+
+export interface AcceptanceCheck {
+  key: 'runtime' | 'permissions' | 'imessage' | 'oauth' | 'sleepWake'
+  label: string
+  status: 'notRun' | 'passed' | 'failed' | 'blocked'
+  detail: string
+  evidence: string | null
+  checkedAt: string | null
+}
 
 export type SkillReviewStatus = 'unreviewed' | 'reviewed' | 'blocked'
 
@@ -324,6 +392,8 @@ export interface AppSnapshot {
   messages: Message[]
   runs: Run[]
   handoffs: Handoff[]
+  workspaces: Workspace[]
+  workspaceEvents: WorkspaceEvent[]
   approvals: Approval[]
   artifacts: Artifact[]
   audit: AuditEvent[]
@@ -333,6 +403,8 @@ export interface AppSnapshot {
   routines: Routine[]
   routineAttempts: RoutineAttempt[]
   notifications: NotificationRecord[]
+  memories: AgentMemory[]
+  acceptance: AcceptanceCheck[]
   gui: GuiControlSnapshot
   integrationError: string | null
 }
@@ -362,12 +434,31 @@ export interface DesktopApi {
   }
   approvals: {
     resolve: (approvalId: string, decision: 'approve' | 'decline' | 'cancel') => Promise<void>
+    ask: (approvalId: string, question: string) => Promise<void>
+    editAndApprove: (approvalId: string, input: string) => Promise<void>
   }
   connectors: {
     refresh: () => Promise<void>
     add: (input: ConnectorInput) => Promise<void>
+    update: (name: string, input: ConnectorInput) => Promise<void>
+    remove: (name: string) => Promise<void>
     setEnabled: (name: string, enabled: boolean) => Promise<void>
     login: (name: string) => Promise<{ authorizationUrl: string }>
+    logout: (name: string) => Promise<void>
+  }
+  workspaces: {
+    create: (input: WorkspaceInput) => Promise<Workspace>
+    update: (id: string, input: WorkspaceInput) => Promise<Workspace>
+    setStatus: (id: string, status: Workspace['status']) => Promise<void>
+    startTask: (id: string, prompt: string) => Promise<{ runId: string }>
+  }
+  memories: {
+    add: (agentId: string, content: string) => Promise<AgentMemory>
+    setPolicy: (agentId: string, input: AgentMemoryPolicyInput) => Promise<void>
+    delete: (id: string) => Promise<void>
+    clear: (agentId: string) => Promise<void>
+    deleteThread: (agentId: string) => Promise<void>
+    export: (agentId: string) => Promise<{ path: string } | null>
   }
   skills: {
     refresh: () => Promise<void>
@@ -399,6 +490,11 @@ export interface DesktopApi {
     emergencyStop: () => Promise<void>
     resetEmergencyStop: () => Promise<void>
     evidenceDataUrl: (evidenceId: string) => Promise<string>
+  }
+  acceptance: {
+    refreshPermissions: () => Promise<void>
+    exerciseIMessage: () => Promise<void>
+    exerciseWakeCatchUp: () => Promise<void>
   }
   artifacts: {
     create: (input: { agentId: string; runId?: string | null; name: string; content: string }) => Promise<Artifact>
