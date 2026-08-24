@@ -2,7 +2,6 @@ import { _electron as electron, expect, test } from '@playwright/test'
 import { mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import packageMetadata from '../../package.json'
 
 test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and safely controls one GUI lane', async () => {
   const dataDirectory = await mkdtemp(join(tmpdir(), 'splittbot-e2e-'))
@@ -146,7 +145,8 @@ test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and 
   await application.close()
 
   const protocolLog = await readFile(fakeLog, 'utf8')
-  expect(protocolLog).toContain(`"clientInfo":{"name":"splittbot","title":"SplittBot","version":"${packageMetadata.version}"}`)
+  const currentVersion = (JSON.parse(await readFile(resolve('package.json'), 'utf8')) as { version: string }).version
+  expect(protocolLog).toContain(`"clientInfo":{"name":"splittbot","title":"SplittBot","version":"${currentVersion}"}`)
   expect(protocolLog).toContain('"method":"thread/resume"')
   expect(protocolLog).toContain('"method":"model/list"')
   expect(protocolLog).toContain('"effort":"high"')
