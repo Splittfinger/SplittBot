@@ -1,0 +1,137 @@
+import { readFile, stat } from 'node:fs/promises'
+import { dialog, ipcMain, shell } from 'electron'
+import { z } from 'zod'
+import type { CodexService } from './services/codex-service'
+import { avatarImageMime, MAX_AVATAR_BYTES } from './services/avatar-image'
+
+const grantsSchema = z.object({
+  readableRoots: z.array(z.string()),
+  writableRoots: z.array(z.string()),
+  allowedCommands: z.array(z.string()),
+  allowedApps: z.array(z.string()),
+  allowedConnectors: z.array(z.string().min(1).max(120)),
+  allowedSkillPaths: z.array(z.string().startsWith('/')),
+  allowedShortcuts: z.array(z.string().min(1).max(180)),
+  networkAccess: z.boolean()
+})
+
+const avatarSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('initials'), value: z.null() }),
+  z.object({ type: z.literal('emoji'), value: z.string().trim().min(1).max(16) }),
+  z.object({ type: z.literal('image'), value: z.string().startsWith('data:image/').max(7_000_000) })
+])
+
+const agentInputSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  role: z.string().trim().min(1).max(120),
+  instructions: z.string().trim().min(1).max(12_000),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  model: z.string().trim().max(120).nullable().optional(),
+  reasoningEffort: z.string().trim().max(40).nullable().optional(),
+  avatar: avatarSchema,
+  collaboratorIds: z.array(z.string().uuid()).max(50),
+  cwd: z.string().trim().min(1),
+  accessMode: z.enum(['readOnly', 'workspaceWrite']),
+  grants: grantsSchema
+})
+
+const idSchema = z.string().uuid()
+const connectorNameSchema = z.string().trim().regex(/^[A-Za-z0-9_-]{1,60}$/)
+const connectorInputSchema = z.discriminatedUnion('transport', [
+  z.object({ name: connectorNameSchema, transport: z.literal('stdio'), command: z.string().trim().startsWith('/').max(500), args: z.array(z.string().max(2_000)).max(50) }),
+  z.object({ name: connectorNameSchema, transport: z.literal('streamableHttp'), url: z.string().url().refine((value) => new URL(value).protocol === 'https:', 'Connector URLs must use HTTPS.') })
+])
+const scheduleSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('interval'), intervalMinutes: z.number().int().min(1).max(43_200) }),
+  z.object({ kind: z.literal('daily'), timeOfDay: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), daysOfWeek: z.array(z.number().int().min(0).max(6)).max(7) })
+])
+const routineInputSchema = z.object({
+  agentId: idSchema,
+  title: z.string().trim().min(1).max(120),
+  prompt: z.string().trim().min(1).max(100_000),
+  schedule: scheduleSchema,
+  catchUpPolicy: z.enum(['skip', 'runOnce']),
+  maxRetries: z.number().int().min(0).max(3),
+  retryDelayMinutes: z.number().int().min(1).max(1_440),
+  notifyPolicy: z.enum(['always', 'failure', 'never']),
+  skillPath: z.string().startsWith('/').nullable().optional()
+})
+const guiStepSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('activateApp') }),
+  z.object({ type: z.literal('wait'), durationMs: z.number().int().min(100).max(10_000) }),
+  z.object({ type: z.literal('clickElement'), label: z.string().trim().min(1).max(120) }),
+  z.object({ type: z.literal('typeText'), text: z.string().min(1).max(2_000) }),
+  z.object({ type: z.literal('pressKey'), key: z.enum(['tab', 'escape', 'arrowUp', 'arrowDown', 'arrowLeft', 'arrowRight']) })
+])
+const guiSessionInputSchema = z.object({
+  agentId: idSchema,
+  targetApp: z.string().trim().min(1).max(120),
+  objective: z.string().trim().min(1).max(500),
+  steps: z.array(guiStepSchema).min(1).max(20),
+  maxRetries: z.number().int().min(0).max(2)
+})
+
+export function registerIpc(service: CodexService): void {
+  ipcMain.handle('snapshot:get', (_event, agentId?: string) => service.getSnapshot(agentId ? idSchema.parse(agentId) : undefined))
+  ipcMain.handle('agents:create', (_event, input) => service.createAgent(agentInputSchema.parse(input)))
+  ipcMain.handle('agents:update', (_event, id, input) => service.updateAgent(idSchema.parse(id), agentInputSchema.parse(input)))
+  ipcMain.handle('agents:archive', (_event, id) => service.archiveAgent(idSchema.parse(id)))
+  ipcMain.handle('chat:send', (_event, agentId, message) => service.startMessage(idSchema.parse(agentId), z.string().trim().min(1).max(100_000).parse(message)))
+  ipcMain.handle('chat:cancel', (_event, runId) => service.cancelRun(idSchema.parse(runId)))
+  ipcMain.handle('approvals:resolve', (_event, approvalId, decision) => service.resolveApproval(idSchema.parse(approvalId), z.enum(['approve', 'decline', 'cancel']).parse(decision)))
+  ipcMain.handle('connectors:refresh', () => service.refreshIntegrations())
+  ipcMain.handle('connectors:add', (_event, input) => service.addConnector(connectorInputSchema.parse(input)))
+  ipcMain.handle('connectors:setEnabled', (_event, name, enabled) => service.setConnectorEnabled(connectorNameSchema.parse(name), z.boolean().parse(enabled)))
+  ipcMain.handle('connectors:login', (_event, name) => service.loginConnector(connectorNameSchema.parse(name)))
+  ipcMain.handle('skills:refresh', () => service.refreshIntegrations())
+  ipcMain.handle('skills:review', (_event, path, status, notes) => service.reviewSkill(z.string().startsWith('/').parse(path), z.enum(['unreviewed', 'reviewed', 'blocked']).parse(status), z.string().trim().max(2_000).nullable().optional().parse(notes) ?? null))
+  ipcMain.handle('skills:setEnabled', (_event, path, enabled) => service.setSkillEnabled(z.string().startsWith('/').parse(path), z.boolean().parse(enabled)))
+  ipcMain.handle('routines:create', (_event, input) => service.createRoutine(routineInputSchema.parse(input)))
+  ipcMain.handle('routines:update', (_event, id, input) => service.updateRoutine(idSchema.parse(id), routineInputSchema.parse(input)))
+  ipcMain.handle('routines:setStatus', (_event, id, status) => service.setRoutineStatus(idSchema.parse(id), z.enum(['active', 'paused']).parse(status)))
+  ipcMain.handle('routines:runNow', (_event, id) => service.runRoutineNow(idSchema.parse(id)))
+  ipcMain.handle('notifications:markRead', (_event, id) => service.markNotificationRead(idSchema.parse(id)))
+  ipcMain.handle('notifications:markAllRead', () => service.markAllNotificationsRead())
+  ipcMain.handle('shortcuts:prepare', (_event, agentId, name, input) => service.prepareShortcut(idSchema.parse(agentId), z.string().trim().min(1).max(180).parse(name), z.string().max(100_000).parse(input)))
+  ipcMain.handle('gui:refreshPermissions', () => service.refreshGuiPermissions())
+  ipcMain.handle('gui:requestPermission', (_event, kind) => service.requestGuiPermission(z.enum(['accessibility', 'screenRecording']).parse(kind)))
+  ipcMain.handle('gui:openPermissionSettings', (_event, kind) => service.openGuiPermissionSettings(z.enum(['accessibility', 'screenRecording']).parse(kind)))
+  ipcMain.handle('gui:prepare', (_event, input) => service.prepareGuiSession(guiSessionInputSchema.parse(input)))
+  ipcMain.handle('gui:pause', (_event, id) => service.pauseGuiSession(idSchema.parse(id)))
+  ipcMain.handle('gui:resume', (_event, id) => service.resumeGuiSession(idSchema.parse(id)))
+  ipcMain.handle('gui:takeover', (_event, id) => service.takeoverGuiSession(idSchema.parse(id)))
+  ipcMain.handle('gui:emergencyStop', () => service.emergencyStopGui())
+  ipcMain.handle('gui:resetEmergencyStop', () => service.resetGuiEmergencyStop())
+  ipcMain.handle('gui:evidenceDataUrl', (_event, id) => service.guiEvidenceDataUrl(idSchema.parse(id)))
+  ipcMain.handle('artifacts:create', (_event, input) => {
+    const parsed = z.object({ agentId: idSchema, runId: idSchema.nullable().optional(), name: z.string().trim().min(1).max(180), content: z.string().min(1).max(1_000_000) }).parse(input)
+    return service.createArtifact(parsed)
+  })
+  ipcMain.handle('avatars:choose', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Choose an agent picture',
+      properties: ['openFile'],
+      filters: [{ name: 'Pictures', extensions: ['png', 'jpg', 'jpeg', 'webp'] }]
+    })
+    const path = result.filePaths[0]
+    if (result.canceled || !path) return null
+    const metadata = await stat(path)
+    if (!metadata.isFile() || metadata.size > MAX_AVATAR_BYTES) throw new Error('Choose a PNG, JPEG, or WebP picture smaller than 5 MB.')
+    const bytes = await readFile(path)
+    const mime = avatarImageMime(bytes)
+    if (!mime) throw new Error('The selected file is not a valid PNG, JPEG, or WebP picture.')
+    return { dataUrl: `data:${mime};base64,${bytes.toString('base64')}` }
+  })
+  ipcMain.handle('auth:refresh', () => service.refreshAccount())
+  ipcMain.handle('auth:signIn', () => service.signIn())
+  ipcMain.handle('auth:signOut', () => service.signOut())
+  ipcMain.handle('app:openExternal', async (_event, value) => {
+    const url = new URL(z.string().parse(value))
+    if (url.protocol !== 'https:') throw new Error('Only HTTPS links may be opened.')
+    await shell.openExternal(url.toString())
+  })
+  ipcMain.handle('app:revealPath', (_event, value) => {
+    const path = z.string().min(1).parse(value)
+    shell.showItemInFolder(path)
+  })
+}

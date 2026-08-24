@@ -1,0 +1,70 @@
+{
+  "name": "splittbot",
+  "version": "0.1.0",
+  "private": true,
+  "author": "SplittBot",
+  "description": "A local macOS desktop for persistent ChatGPT-authenticated Codex agents.",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:codex-live": "tsx scripts/live-codex-smoke.ts",
+    "test:e2e": "npm run build && playwright test",
+    "package:mac": "npm run build && electron-builder --mac dir && tsx scripts/sign-local.ts",
+    "test:packaged": "playwright test --config playwright.packaged.config.ts",
+    "verify": "npm run typecheck && npm run test && npm run test:e2e && npm run package:mac && npm run test:packaged"
+  },
+  "build": {
+    "appId": "ai.splittbot.desktop",
+    "productName": "SplittBot",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "SplittBot uses Apple Events only for an explicitly approved, visible GUI-control session in an app you granted to an agent."
+      },
+      "gatekeeperAssess": false,
+      "identity": null,
+      "target": [
+        "dir"
+      ]
+    }
+  },
+  "dependencies": {
+    "lucide-react": "^1.33.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "sql.js": "^1.14.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@types/sql.js": "^1.4.11",
+    "@vitejs/plugin-react": "^5.1.4",
+    "@vitest/coverage-v8": "^4.1.11",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11"
+  }
+}

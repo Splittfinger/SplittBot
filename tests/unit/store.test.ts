@@ -1,0 +1,51 @@
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { SqliteStore } from '../../src/main/db/store'
+
+const grants = { readableRoots: ['/tmp'], writableRoots: [], allowedCommands: [], allowedApps: [], allowedConnectors: [], allowedSkillPaths: [], allowedShortcuts: [], networkAccess: false }
+
+describe('SqliteStore', () => {
+  it('persists agents, messages, runs, artifacts, approvals, and audit events', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'splittbot-store-'))
+    const path = join(directory, 'state.sqlite')
+    let store = await SqliteStore.open(path)
+    const atlas = await store.createAgent({ name: 'Atlas', role: 'Chief of Staff', instructions: 'Synthesize the work.', color: '#16876f', model: null, reasoningEffort: null, avatar: { type: 'initials', value: null }, collaboratorIds: [], cwd: '/tmp', accessMode: 'readOnly', grants })
+    const agent = await store.createAgent({ name: 'Maya', role: 'Researcher', instructions: 'Cite every claim with @Atlas.', color: '#7657d8', model: 'codex-test', reasoningEffort: 'high', avatar: { type: 'emoji', value: '🔬' }, collaboratorIds: [atlas.id], cwd: '/tmp', accessMode: 'readOnly', grants })
+    const run = await store.createRun(agent.id, 'Research this')
+    const handoff = await store.createHandoff({ parentRunId: run.id, fromAgentId: agent.id, toAgentId: atlas.id, prompt: 'Synthesize this' })
+    await store.updateHandoff(handoff.id, { status: 'completed', result: 'Combined', completedAt: new Date().toISOString() })
+    await store.addMessage({ agentId: agent.id, runId: run.id, role: 'user', kind: 'text', content: 'Research this' })
+    await store.createArtifact({ agentId: agent.id, runId: run.id, name: 'Brief', content: 'Result' })
+    await store.createApproval({ agentId: agent.id, runId: run.id, requestId: 'rpc-1', method: 'item/commandExecution/requestApproval', title: 'Run command', summary: 'echo', request: { command: ['echo'] } })
+    await store.addAudit({ type: 'test', actor: 'system', agentId: agent.id, runId: run.id, summary: 'Recorded test', detail: {} })
+    await store.setSkillReview('/tmp/fake-brief/SKILL.md', 'reviewed', 'Reviewed in test')
+    const routine = await store.createRoutine({ agentId: agent.id, title: 'Morning brief', prompt: 'Prepare a brief', schedule: { kind: 'daily', timeOfDay: '08:00', daysOfWeek: [1, 2, 3, 4, 5] }, catchUpPolicy: 'runOnce', maxRetries: 2, retryDelayMinutes: 5, notifyPolicy: 'always', skillPath: '/tmp/fake-brief/SKILL.md' }, '2026-08-22T14:00:00.000Z')
+    await store.createRoutineAttempt({ routineId: routine.id, runId: run.id, attemptNo: 1, status: 'completed', scheduledFor: '2026-08-21T14:00:00.000Z', startedAt: '2026-08-21T14:00:00.000Z', completedAt: '2026-08-21T14:01:00.000Z' })
+    await store.createNotification({ type: 'routineCompleted', title: 'SplittBot routine', body: 'Morning brief completed.', agentId: agent.id, runId: run.id })
+    const guiSession = await store.createGuiSession({ agentId: agent.id, targetApp: 'Preview', objective: 'Open a document safely.', steps: [{ type: 'activateApp' }, { type: 'wait', durationMs: 500 }], maxRetries: 1 }, 'b'.repeat(64))
+    await store.updateGuiSession(guiSession.id, { status: 'completed', currentStep: 2, startedAt: '2026-08-21T14:00:00.000Z', completedAt: '2026-08-21T14:00:01.000Z' })
+    await store.createGuiEvidence({ sessionId: guiSession.id, kind: 'after', stepIndex: 1, summary: 'Verified Preview', path: '/tmp/preview.png' })
+    await store.setGuiEmergencyStopped(true)
+    store.close()
+
+    store = await SqliteStore.open(path)
+    expect(store.listAgents()).toHaveLength(2)
+    expect(store.getAgent(agent.id)).toMatchObject({ reasoningEffort: 'high', avatar: { type: 'emoji', value: '🔬' }, collaboratorIds: [atlas.id] })
+    expect(store.listMessages(agent.id)[0]?.content).toBe('Research this')
+    expect(store.listRuns()[0]?.status).toBe('failed')
+    expect(store.listArtifacts()[0]?.name).toBe('Brief')
+    expect(store.listApprovals()[0]?.status).toBe('expired')
+    expect(store.listAudit()[0]?.summary).toBe('Recorded test')
+    expect(store.listHandoffs()[0]).toMatchObject({ status: 'completed', result: 'Combined', toAgentId: atlas.id })
+    expect(store.listSkillReviews()[0]).toMatchObject({ status: 'reviewed', notes: 'Reviewed in test' })
+    expect(store.listRoutines()[0]).toMatchObject({ title: 'Morning brief', maxRetries: 2, catchUpPolicy: 'runOnce' })
+    expect(store.listRoutineAttempts()[0]).toMatchObject({ status: 'completed', attemptNo: 1 })
+    expect(store.listNotifications()[0]).toMatchObject({ type: 'routineCompleted', read: false })
+    expect(store.listGuiSessions()[0]).toMatchObject({ targetApp: 'Preview', status: 'completed', currentStep: 2, maxRetries: 1 })
+    expect(store.listGuiEvidence()[0]).toMatchObject({ kind: 'after', summary: 'Verified Preview' })
+    expect(store.isGuiEmergencyStopped()).toBe(true)
+    store.close()
+  })
+})
