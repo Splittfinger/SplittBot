@@ -8,6 +8,7 @@ import { CodexService } from './services/codex-service'
 import { DeterministicGuiAdapter, GuiAutomationBroker } from './services/gui-automation'
 import { JsonLogger } from './services/logger'
 import { MacGuiAutomationAdapter } from './services/mac-gui-adapter'
+import { restoreSplittBotBackup, validateSplittBotBackup } from './services/data-recovery'
 
 let mainWindow: BrowserWindow | null = null
 let service: CodexService | null = null
@@ -30,7 +31,26 @@ async function createApplication(): Promise<void> {
   service = new CodexService(store, client, logger, gui, (title, body) => {
     if (process.env.SPLITTBOT_TEST_MODE !== '1' && Notification.isSupported()) new Notification({ title, body }).show()
   })
-  registerIpc(service)
+  registerIpc(service, {
+    dataDirectory,
+    defaultBackupDirectory: app.getPath('documents'),
+    createBackup: async (destination) => {
+      if (!store) throw new Error('SplittBot data is not available.')
+      await store.addAudit({ type: 'data.backup.created', actor: 'user', agentId: null, runId: null, summary: 'Created a local database backup', detail: {} })
+      return store.createBackup(destination)
+    },
+    restoreBackup: async (source) => {
+      await validateSplittBotBackup(source)
+      await service?.stop()
+      store?.close()
+      try {
+        await restoreSplittBotBackup(source, databasePath)
+      } finally {
+        app.relaunch()
+        app.exit(0)
+      }
+    }
+  })
   service.on('event', (event) => {
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send('splittbot:event', event)
   })

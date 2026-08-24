@@ -1,11 +1,17 @@
 import { _electron as electron, expect, test } from '@playwright/test'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import packageMetadata from '../../package.json'
 
-test('Phase 0-3 desktop flow persists agents, gates tools, and safely controls one GUI lane', async () => {
+test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and safely controls one GUI lane', async () => {
   const dataDirectory = await mkdtemp(join(tmpdir(), 'splittbot-e2e-'))
   const fakeLog = join(dataDirectory, 'fake.jsonl')
+  const backupPath = join(dataDirectory, 'phase-4-backup.sqlite')
+  const artifactPath = join(dataDirectory, 'gui-verification.md')
+  const attachmentPath = join(dataDirectory, 'test-image.png')
+  await writeFile(attachmentPath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+XG8QAAAAAElFTkSuQmCC', 'base64'))
+  const canonicalAttachmentPath = await realpath(attachmentPath)
   const environment = {
     ...process.env,
     SPLITTBOT_DATA_DIR: dataDirectory,
@@ -13,7 +19,10 @@ test('Phase 0-3 desktop flow persists agents, gates tools, and safely controls o
     SPLITTBOT_DEFAULT_CWD: process.cwd(),
     SPLITTBOT_CODEX_COMMAND: process.execPath,
     SPLITTBOT_CODEX_ARGS_JSON: JSON.stringify([resolve('tests/fixtures/fake-app-server.mjs')]),
-    SPLITTBOT_FAKE_LOG: fakeLog
+    SPLITTBOT_FAKE_LOG: fakeLog,
+    SPLITTBOT_TEST_BACKUP_PATH: backupPath,
+    SPLITTBOT_TEST_ARTIFACT_PATH: artifactPath,
+    SPLITTBOT_TEST_ATTACHMENT_PATH: attachmentPath
   }
 
   let application = await electron.launch({ args: [resolve('out/main/index.js')], env: environment })
@@ -23,8 +32,11 @@ test('Phase 0-3 desktop flow persists agents, gates tools, and safely controls o
 
   await window.getByLabel('Agents').click()
   const composer = window.getByLabel('Message Atlas')
+  await window.getByLabel('Attach images').click()
+  await expect(window.getByText('test-image.png', { exact: true })).toBeVisible()
   await composer.fill('Hello from E2E')
   await window.getByLabel('Send').click()
+  await expect(window.getByText('1 user-selected image attached to Atlas’s turn.')).toBeVisible()
   await expect(window.getByText('FAKE_RESPONSE: Hello from E2E')).toBeVisible()
 
   await composer.fill('REQUEST_APPROVAL')
@@ -88,6 +100,16 @@ test('Phase 0-3 desktop flow persists agents, gates tools, and safely controls o
   await window.getByRole('button', { name: 'Reset emergency stop' }).click()
   await expect(window.getByText('Immediately stop the active lane and cancel queued GUI work.')).toBeVisible()
 
+  await window.getByLabel('Artifacts').click()
+  await window.getByRole('button', { name: 'Export' }).first().click()
+  await expect(window.getByText(`Exported to ${artifactPath}`)).toBeVisible()
+  expect((await readFile(artifactPath, 'utf8')).length).toBeGreaterThan(20)
+
+  await window.getByLabel('Routines').click()
+  window.once('dialog', (dialog) => void dialog.accept())
+  await window.getByRole('button', { name: 'Delete' }).click()
+  await expect(window.getByRole('heading', { name: 'Morning brief' })).toHaveCount(0)
+
   await window.getByRole('button', { name: 'New agent' }).click()
   await window.getByLabel('Name').fill('Maya')
   await window.getByLabel('Role').fill('Researcher')
@@ -108,6 +130,11 @@ test('Phase 0-3 desktop flow persists agents, gates tools, and safely controls o
   await window.getByRole('button', { name: 'Archive agent' }).click()
   await expect(window.getByRole('button', { name: /Maya Researcher/ })).toHaveCount(0)
 
+  await window.getByLabel('Settings').click()
+  await window.getByRole('button', { name: 'Create backup' }).click()
+  await expect(window.getByText(`Backup created: ${backupPath}`)).toBeVisible()
+  expect((await readFile(backupPath)).subarray(0, 16).toString('utf8')).toBe('SQLite format 3\0')
+
   await application.close()
   application = await electron.launch({ args: [resolve('out/main/index.js')], env: environment })
   window = await application.firstWindow()
@@ -119,9 +146,11 @@ test('Phase 0-3 desktop flow persists agents, gates tools, and safely controls o
   await application.close()
 
   const protocolLog = await readFile(fakeLog, 'utf8')
+  expect(protocolLog).toContain(`"clientInfo":{"name":"splittbot","title":"SplittBot","version":"${packageMetadata.version}"}`)
   expect(protocolLog).toContain('"method":"thread/resume"')
   expect(protocolLog).toContain('"method":"model/list"')
   expect(protocolLog).toContain('"effort":"high"')
+  expect(protocolLog).toContain(`"type":"localImage","path":"${canonicalAttachmentPath}","detail":"auto"`)
   expect(protocolLog).toContain('"type":"skill","name":"fake-brief","path":"/tmp/fake-brief/SKILL.md"')
   expect(protocolLog).toContain('You are collaborating with @Maya')
 })

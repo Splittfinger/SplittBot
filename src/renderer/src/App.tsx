@@ -33,12 +33,13 @@ import {
   Sparkles,
   Square,
   TriangleAlert,
+  Trash2,
   Upload,
   Users,
   Workflow,
   X
 } from 'lucide-react'
-import type { Agent, AgentAvatar, AgentInput, AppEvent, AppSnapshot, ConnectorInput, GuiEvidence, GuiSessionInput, GuiStep, Message, RoutineInput, Run } from '../../shared/contracts'
+import type { Agent, AgentAvatar, AgentInput, AppEvent, AppSnapshot, ChatImageAttachment, ConnectorInput, GuiEvidence, GuiSessionInput, GuiStep, Message, RoutineInput, Run } from '../../shared/contracts'
 
 type Section = 'home' | 'agents' | 'runs' | 'routines' | 'integrations' | 'computer' | 'approvals' | 'notifications' | 'artifacts' | 'audit' | 'settings'
 
@@ -50,6 +51,7 @@ export function App(): JSX.Element {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [section, setSection] = useState<Section>('home')
   const [composer, setComposer] = useState('')
+  const [attachments, setAttachments] = useState<ChatImageAttachment[]>([])
   const [streaming, setStreaming] = useState<Record<string, string>>({})
   const [warning, setWarning] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -69,6 +71,8 @@ export function App(): JSX.Element {
   useEffect(() => {
     void refresh(selectedAgentId)
   }, [selectedAgentId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => setAttachments([]), [selectedAgentId])
 
   useEffect(() => window.splittbot.events.subscribe((event: AppEvent) => {
     if (event.type === 'run:delta') {
@@ -110,17 +114,28 @@ export function App(): JSX.Element {
   }
 
   async function sendMessage(): Promise<void> {
-    if (!selectedAgent || !composer.trim() || busy) return
+    if (!selectedAgent || (!composer.trim() && !attachments.length) || busy) return
     setBusy(true)
     setError(null)
     try {
-      await window.splittbot.chat.send(selectedAgent.id, composer)
+      await window.splittbot.chat.send(selectedAgent.id, composer, attachments.map((attachment) => attachment.id))
       setComposer('')
+      setAttachments([])
       await refresh(selectedAgent.id)
     } catch (caught) {
       setError(messageOf(caught))
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function attachImages(): Promise<void> {
+    setError(null)
+    try {
+      const selected = await window.splittbot.chat.chooseImages()
+      setAttachments((current) => [...current, ...selected].slice(0, 4))
+    } catch (caught) {
+      setError(messageOf(caught))
     }
   }
 
@@ -209,6 +224,9 @@ export function App(): JSX.Element {
             streaming={streaming}
             composer={composer}
             setComposer={setComposer}
+            attachments={attachments}
+            onAttach={() => void attachImages()}
+            onRemoveAttachment={(id) => setAttachments((current) => current.filter((attachment) => attachment.id !== id))}
             onSend={() => void sendMessage()}
             onEdit={() => setAgentEditor(selectedAgent)}
             onCancel={activeRun ? () => void window.splittbot.chat.cancel(activeRun.id) : undefined}
@@ -304,9 +322,9 @@ function Metric({ icon, label, value, accent }: { icon: JSX.Element; label: stri
 }
 
 function AgentConversation(props: {
-  agent: Agent; agents: Agent[]; messages: Message[]; runs: Run[]; streaming: Record<string, string>; composer: string; setComposer: (value: string) => void; onSend: () => void; onEdit: () => void; onCancel?: () => void; onSaveArtifact: (message: Message) => void; busy: boolean
+  agent: Agent; agents: Agent[]; messages: Message[]; runs: Run[]; streaming: Record<string, string>; composer: string; setComposer: (value: string) => void; attachments: ChatImageAttachment[]; onAttach: () => void; onRemoveAttachment: (id: string) => void; onSend: () => void; onEdit: () => void; onCancel?: () => void; onSaveArtifact: (message: Message) => void; busy: boolean
 }): JSX.Element {
-  const { agent, agents, messages, runs, streaming, composer, setComposer, onSend, onEdit, onCancel, onSaveArtifact, busy } = props
+  const { agent, agents, messages, runs, streaming, composer, setComposer, attachments, onAttach, onRemoveAttachment, onSend, onEdit, onCancel, onSaveArtifact, busy } = props
   const streamEntries = Object.entries(streaming).filter(([runId]) => runs.some((run) => run.id === runId))
   return <div className="conversation">
     <header className="conversation-header">
@@ -323,8 +341,9 @@ function AgentConversation(props: {
     </div>
     <div className="composer-wrap">
       <div className="composer-box">
+        {attachments.length ? <div className="attachment-chips">{attachments.map((attachment) => <span key={attachment.id}><FileText size={12} /><span><strong>{attachment.name}</strong><small>{formatBytes(attachment.size)} · image</small></span><button aria-label={`Remove ${attachment.name}`} onClick={() => onRemoveAttachment(attachment.id)}><X size={12} /></button></span>)}</div> : null}
         <MentionTextarea value={composer} onChange={setComposer} agents={agents} currentAgentId={agent.id} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSend() } }} placeholder={`Message ${agent.name}… Tag @teammates to collaborate.`} ariaLabel={`Message ${agent.name}`} />
-        <div className="composer-actions"><div><button className="composer-tool" title="Attach files"><Plus size={17} /></button><span>Enter to send · Shift+Enter for a new line</span></div>{onCancel ? <button className="stop-button" onClick={onCancel}><Square size={13} fill="currentColor" /> Stop</button> : <button className="send-button" aria-label="Send" disabled={!composer.trim() || busy} onClick={onSend}>{busy ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button>}</div>
+        <div className="composer-actions"><div><button className="composer-tool" aria-label="Attach images" title="Attach up to four PNG, JPEG, or WebP images" disabled={busy || attachments.length >= 4} onClick={onAttach}><Plus size={17} /></button><span>Enter to send · Shift+Enter for a new line</span></div>{onCancel ? <button className="stop-button" onClick={onCancel}><Square size={13} fill="currentColor" /> Stop</button> : <button className="send-button" aria-label="Send" disabled={(!composer.trim() && !attachments.length) || busy} onClick={onSend}>{busy ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button>}</div>
       </div>
       <p className="composer-note">Tag @AgentName or @all to collaborate. Every agent keeps their own model, effort, workspace, and permissions.</p>
     </div>
@@ -424,7 +443,7 @@ function RoutinesView({ snapshot, busy, onAction }: { snapshot: AppSnapshot; bus
     </section> : null}
     <div className="routine-grid">{snapshot.routines.length ? snapshot.routines.map((routine) => {
       const lastAttempt = snapshot.routineAttempts.find((attempt) => attempt.routineId === routine.id)
-      return <article className="routine-card" key={routine.id}><div className="routine-top"><span className={`integration-icon ${routine.status}`}><CalendarClock size={18} /></span><div><h3>{routine.title}</h3><span>{snapshot.agents.find((item) => item.id === routine.agentId)?.name || 'Agent'}</span></div><StatusPill status={routine.status} /></div><p>{routine.prompt}</p><div className="routine-meta"><span>Next: {formatTime(routine.nextRunAt)}</span><span>{routine.catchUpPolicy === 'runOnce' ? 'Catch up once' : 'Skip missed'}</span><span>{routine.maxRetries} retries</span>{lastAttempt ? <span>Last: {statusText(lastAttempt.status)}</span> : null}</div><div className="button-row"><button className="secondary-button" disabled={busy} onClick={() => void onAction(() => window.splittbot.routines.runNow(routine.id))}><Play size={14} /> Run now</button><button className="ghost-button" disabled={busy} onClick={() => edit(routine)}><Pencil size={14} /> Edit</button><button className="ghost-button" disabled={busy} onClick={() => void onAction(() => window.splittbot.routines.setStatus(routine.id, routine.status === 'active' ? 'paused' : 'active'))}>{routine.status === 'active' ? <><Pause size={14} /> Pause</> : <><Play size={14} /> Resume</>}</button></div></article>
+      return <article className="routine-card" key={routine.id}><div className="routine-top"><span className={`integration-icon ${routine.status}`}><CalendarClock size={18} /></span><div><h3>{routine.title}</h3><span>{snapshot.agents.find((item) => item.id === routine.agentId)?.name || 'Agent'}</span></div><StatusPill status={routine.status} /></div><p>{routine.prompt}</p><div className="routine-meta"><span>Next: {formatTime(routine.nextRunAt)}</span><span>{routine.catchUpPolicy === 'runOnce' ? 'Catch up once' : 'Skip missed'}</span><span>{routine.maxRetries} retries</span>{lastAttempt ? <span>Last: {statusText(lastAttempt.status)}</span> : null}</div><div className="button-row"><button className="secondary-button" disabled={busy} onClick={() => void onAction(() => window.splittbot.routines.runNow(routine.id))}><Play size={14} /> Run now</button><button className="ghost-button" disabled={busy} onClick={() => edit(routine)}><Pencil size={14} /> Edit</button><button className="ghost-button" disabled={busy} onClick={() => void onAction(() => window.splittbot.routines.setStatus(routine.id, routine.status === 'active' ? 'paused' : 'active'))}>{routine.status === 'active' ? <><Pause size={14} /> Pause</> : <><Play size={14} /> Resume</>}</button><button className="ghost-button danger-text" disabled={busy} onClick={() => { if (window.confirm(`Delete the “${routine.title}” routine and its attempt history?`)) void onAction(() => window.splittbot.routines.delete(routine.id)) }}><Trash2 size={14} /> Delete</button></div></article>
     }) : <Empty icon={<CalendarClock />} title="No routines yet" detail="Create an awake-only schedule for an agent." />}</div>
   </Page>
 }
@@ -572,7 +591,18 @@ function ApprovalsView({ snapshot, onResolve }: { snapshot: AppSnapshot; onResol
 }
 
 function ArtifactsView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
-  return <Page title="Artifacts" eyebrow="Saved results" detail="Durable outputs from your agents, kept locally."><div className="artifact-grid">{snapshot.artifacts.length ? snapshot.artifacts.map((artifact) => <article className="artifact-card" key={artifact.id}><div className="artifact-icon"><FileText size={20} /></div><span className="eyebrow">{artifact.kind}</span><h3>{artifact.name}</h3><p>{artifact.content.slice(0, 180)}{artifact.content.length > 180 ? '…' : ''}</p><div>{snapshot.agents.find((agent) => agent.id === artifact.agentId)?.name || 'Agent'} · {formatTime(artifact.createdAt)}</div></article>) : <Empty icon={<FileText />} title="No artifacts saved" detail="Save a useful agent response to keep it here." />}</div></Page>
+  const [exportedPath, setExportedPath] = useState<string | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
+  async function exportArtifact(id: string): Promise<void> {
+    setExportError(null)
+    try {
+      const result = await window.splittbot.artifacts.export(id)
+      if (result) setExportedPath(result.path)
+    } catch (error) {
+      setExportError(messageOf(error))
+    }
+  }
+  return <Page title="Artifacts" eyebrow="Saved results" detail="Durable outputs from your agents, kept locally.">{exportedPath ? <div className="inline-success">Exported to {exportedPath}</div> : null}{exportError ? <div className="inline-warning"><CircleAlert size={15} /> {exportError}</div> : null}<div className="artifact-grid">{snapshot.artifacts.length ? snapshot.artifacts.map((artifact) => <article className="artifact-card" key={artifact.id}><div className="artifact-icon"><FileText size={20} /></div><span className="eyebrow">{artifact.kind}</span><h3>{artifact.name}</h3><p>{artifact.content.slice(0, 180)}{artifact.content.length > 180 ? '…' : ''}</p><div className="artifact-footer"><span>{snapshot.agents.find((agent) => agent.id === artifact.agentId)?.name || 'Agent'} · {formatTime(artifact.createdAt)}</span><button className="ghost-button" onClick={() => void exportArtifact(artifact.id)}>Export</button></div></article>) : <Empty icon={<FileText />} title="No artifacts saved" detail="Save a useful agent response to keep it here." />}</div></Page>
 }
 
 function AuditView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
@@ -580,7 +610,21 @@ function AuditView({ snapshot }: { snapshot: AppSnapshot }): JSX.Element {
 }
 
 function SettingsView({ snapshot, onSignIn, onSignOut, onRefresh }: { snapshot: AppSnapshot; onSignIn: () => void; onSignOut: () => Promise<void>; onRefresh: () => void }): JSX.Element {
-  return <Page title="Settings" eyebrow="Local runtime" detail="Your ChatGPT identity and Codex models stay outside the renderer."><div className="settings-grid"><section className="settings-card"><div className="settings-icon"><Bot /></div><div><span className="eyebrow">ChatGPT account</span><h3>{snapshot.account.email || (snapshot.account.state === 'authenticated' ? 'Connected account' : 'Not signed in')}</h3><p>{snapshot.account.state === 'authenticated' ? `${snapshot.account.planType || 'ChatGPT'} plan · Codex-managed authentication` : snapshot.account.error || 'Connect through the browser. SplittBot never asks for an API key.'}</p><div className="button-row">{snapshot.account.state === 'authenticated' ? <button className="secondary-button" onClick={() => void onSignOut()}><LogOut size={15} /> Sign out</button> : <button className="primary-button" onClick={onSignIn}><LogIn size={15} /> Sign in with ChatGPT</button>}<button className="ghost-button" onClick={onRefresh}>Check connection</button></div></div></section><section className="settings-card"><div className="settings-icon"><Sparkles /></div><div><span className="eyebrow">Available models</span><h3>{snapshot.models.length} models discovered</h3><div className="model-tags">{snapshot.models.slice(0, 8).map((model) => <span key={model.id}>{model.displayName}</span>)}</div></div></section><section className="settings-card"><div className="settings-icon"><ShieldCheck /></div><div><span className="eyebrow">Runtime boundary</span><h3>{snapshot.account.runtimeSource || 'Codex runtime'}</h3><p>Credentials remain in the Codex-managed store. SplittBot uses typed IPC, renderer isolation, local SQLite, and secret-redacted logs.</p></div></section></div></Page>
+  const [appVersion, setAppVersion] = useState('')
+  const [dataBusy, setDataBusy] = useState(false)
+  const [dataNotice, setDataNotice] = useState<string | null>(null)
+  const [dataError, setDataError] = useState<string | null>(null)
+
+  useEffect(() => { void window.splittbot.app.getVersion().then(setAppVersion) }, [])
+
+  async function dataAction(action: () => Promise<void>): Promise<void> {
+    setDataBusy(true)
+    setDataNotice(null)
+    setDataError(null)
+    try { await action() } catch (error) { setDataError(messageOf(error)) } finally { setDataBusy(false) }
+  }
+
+  return <Page title="Settings" eyebrow="Local runtime" detail="Your ChatGPT identity and Codex models stay outside the renderer."><div className="settings-grid"><section className="settings-card"><div className="settings-icon"><Bot /></div><div><span className="eyebrow">ChatGPT account</span><h3>{snapshot.account.email || (snapshot.account.state === 'authenticated' ? 'Connected account' : 'Not signed in')}</h3><p>{snapshot.account.state === 'authenticated' ? `${snapshot.account.planType || 'ChatGPT'} plan · Codex-managed authentication` : snapshot.account.error || 'Connect through the browser. SplittBot never asks for an API key.'}</p><div className="button-row">{snapshot.account.state === 'authenticated' ? <button className="secondary-button" onClick={() => void onSignOut()}><LogOut size={15} /> Sign out</button> : <button className="primary-button" onClick={onSignIn}><LogIn size={15} /> Sign in with ChatGPT</button>}<button className="ghost-button" onClick={onRefresh}>Check connection</button></div></div></section><section className="settings-card"><div className="settings-icon"><Sparkles /></div><div><span className="eyebrow">Available models</span><h3>{snapshot.models.length} models discovered</h3><div className="model-tags">{snapshot.models.slice(0, 8).map((model) => <span key={model.id}>{model.displayName}</span>)}</div></div></section><section className="settings-card"><div className="settings-icon"><Save /></div><div><span className="eyebrow">Data and recovery</span><h3>Back up your local agent desk</h3><p>Create a private SQLite backup containing agent profiles, conversations, grants, routines, approvals, artifacts, and audit history. Restoring preserves the current database as a safety copy and restarts SplittBot.</p>{dataNotice ? <div className="data-notice">{dataNotice}</div> : null}{dataError ? <div className="data-error">{dataError}</div> : null}<div className="button-row data-actions"><button className="primary-button" disabled={dataBusy} onClick={() => void dataAction(async () => { const result = await window.splittbot.data.createBackup(); if (result) setDataNotice(`Backup created: ${result.path}`) })}><Save size={14} /> Create backup</button><button className="secondary-button" disabled={dataBusy} onClick={() => void dataAction(async () => { await window.splittbot.data.restoreBackup() })}><Upload size={14} /> Restore backup</button><button className="ghost-button" disabled={dataBusy} onClick={() => void dataAction(() => window.splittbot.data.revealLocalData())}>Reveal local data</button></div><small>GUI screenshots remain in the local data folder; database backups preserve their recorded paths but do not duplicate the image files.</small></div></section><section className="settings-card"><div className="settings-icon"><ShieldCheck /></div><div><span className="eyebrow">Runtime boundary</span><h3>{snapshot.account.runtimeSource || 'Codex runtime'}</h3><p>SplittBot {appVersion || '…'} · Credentials remain in the Codex-managed store. The renderer stays isolated behind typed IPC, local SQLite, and secret-redacted logs.</p></div></section></div></Page>
 }
 
 function MentionTextarea({ value, onChange, agents, currentAgentId, placeholder, ariaLabel, onKeyDown }: {
@@ -778,6 +822,7 @@ function formatTime(value: string): string { return new Intl.DateTimeFormat(unde
 function messageOf(error: unknown): string { return error instanceof Error ? error.message : String(error) }
 function splitList(value: string): string[] { return value.split(',').map((item) => item.trim()).filter(Boolean) }
 function formatEffort(value: string): string { return value.split(/[-_]/).map((part) => part ? `${part[0]!.toUpperCase()}${part.slice(1)}` : '').join(' ') }
+function formatBytes(value: number): string { return value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${Math.round(value / 1024)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB` }
 
 function mentionAt(value: string, caret: number): { start: number; query: string } | null {
   const before = value.slice(0, caret)

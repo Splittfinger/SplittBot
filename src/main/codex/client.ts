@@ -3,6 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface, type Interface } from 'node:readline'
 import type { JsonLogger } from '../services/logger'
 import type { CodexLaunch } from './runtime'
+import packageMetadata from '../../../package.json'
 
 type RpcId = string | number
 type JsonObject = Record<string, unknown>
@@ -66,7 +67,7 @@ export class CodexAppServerClient extends EventEmitter {
     this.child.on('exit', (code, signal) => this.handleExit(new Error(`Codex App Server exited (${code ?? signal ?? 'unknown'}).`)))
 
     await this.request('initialize', {
-      clientInfo: { name: 'splittbot', title: 'SplittBot', version: '0.1.0' }
+      clientInfo: { name: 'splittbot', title: 'SplittBot', version: packageMetadata.version }
     })
     this.notify('initialized', {})
     await this.logger.write('info', 'codex.started', { source: this.launch.source })

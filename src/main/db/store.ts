@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import initSqlJs, { type BindParams, type Database } from 'sql.js'
 import type {
   Agent,
@@ -29,6 +29,7 @@ import type {
   RoutineStatus,
   SkillReviewStatus
 } from '../../shared/contracts'
+import { writePrivateFile } from '../services/data-recovery'
 
 type SqlRow = Record<string, unknown>
 
@@ -69,6 +70,12 @@ export class SqliteStore {
 
   close(): void {
     this.db.close()
+  }
+
+  async createBackup(destination: string): Promise<string> {
+    if (this.path === ':memory:') throw new Error('In-memory test databases cannot be backed up.')
+    if (resolve(destination) === resolve(this.path)) throw new Error('Choose a backup location other than the active database.')
+    return writePrivateFile(destination, this.db.export())
   }
 
   private migrate(): void {
@@ -545,6 +552,19 @@ export class SqliteStore {
 
   async setRoutineStatus(id: string, status: RoutineStatus): Promise<void> {
     await this.mutate(`UPDATE routines SET status = ?, updated_at = ? WHERE id = ?`, [status, new Date().toISOString(), id])
+  }
+
+  async deleteRoutine(id: string): Promise<void> {
+    this.db.run('BEGIN')
+    try {
+      this.db.run(`DELETE FROM routine_attempts WHERE routine_id = ?`, [id])
+      this.db.run(`DELETE FROM routines WHERE id = ?`, [id])
+      this.db.run('COMMIT')
+      await this.persist()
+    } catch (error) {
+      this.db.run('ROLLBACK')
+      throw error
+    }
   }
 
   async advanceRoutine(id: string, nextRunAt: string, lastRunAt?: string | null): Promise<void> {

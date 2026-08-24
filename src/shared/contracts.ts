@@ -62,6 +62,13 @@ export interface Message {
   createdAt: string
 }
 
+export interface ChatImageAttachment {
+  id: string
+  type: 'image'
+  name: string
+  size: number
+}
+
 export interface Run {
   id: string
   agentId: string
@@ -349,7 +356,8 @@ export interface DesktopApi {
     archive: (id: string) => Promise<void>
   }
   chat: {
-    send: (agentId: string, message: string) => Promise<{ runId: string }>
+    chooseImages: () => Promise<ChatImageAttachment[]>
+    send: (agentId: string, message: string, attachmentIds?: string[]) => Promise<{ runId: string }>
     cancel: (runId: string) => Promise<void>
   }
   approvals: {
@@ -371,6 +379,7 @@ export interface DesktopApi {
     update: (id: string, input: RoutineInput) => Promise<Routine>
     setStatus: (id: string, status: RoutineStatus) => Promise<void>
     runNow: (id: string) => Promise<void>
+    delete: (id: string) => Promise<void>
   }
   notifications: {
     markRead: (id: string) => Promise<void>
@@ -393,6 +402,7 @@ export interface DesktopApi {
   }
   artifacts: {
     create: (input: { agentId: string; runId?: string | null; name: string; content: string }) => Promise<Artifact>
+    export: (id: string) => Promise<{ path: string } | null>
   }
   avatars: {
     choose: () => Promise<{ dataUrl: string } | null>
@@ -402,9 +412,15 @@ export interface DesktopApi {
     signIn: () => Promise<{ loginId: string; authUrl: string }>
     signOut: () => Promise<void>
   }
+  data: {
+    createBackup: () => Promise<{ path: string } | null>
+    restoreBackup: () => Promise<{ restored: true } | null>
+    revealLocalData: () => Promise<void>
+  }
   app: {
     openExternal: (url: string) => Promise<void>
     revealPath: (path: string) => Promise<void>
+    getVersion: () => Promise<string>
   }
   events: {
     subscribe: (listener: (event: AppEvent) => void) => () => void
