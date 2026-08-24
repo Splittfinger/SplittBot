@@ -9,7 +9,8 @@ const api: DesktopApi = {
     archive: (id) => ipcRenderer.invoke('agents:archive', id)
   },
   chat: {
-    send: (agentId, message) => ipcRenderer.invoke('chat:send', agentId, message),
+    chooseImages: () => ipcRenderer.invoke('chat:chooseImages'),
+    send: (agentId, message, attachmentIds) => ipcRenderer.invoke('chat:send', agentId, message, attachmentIds),
     cancel: (runId) => ipcRenderer.invoke('chat:cancel', runId)
   },
   approvals: {
@@ -30,7 +31,8 @@ const api: DesktopApi = {
     create: (input) => ipcRenderer.invoke('routines:create', input),
     update: (id, input) => ipcRenderer.invoke('routines:update', id, input),
     setStatus: (id, status) => ipcRenderer.invoke('routines:setStatus', id, status),
-    runNow: (id) => ipcRenderer.invoke('routines:runNow', id)
+    runNow: (id) => ipcRenderer.invoke('routines:runNow', id),
+    delete: (id) => ipcRenderer.invoke('routines:delete', id)
   },
   notifications: {
     markRead: (id) => ipcRenderer.invoke('notifications:markRead', id),
@@ -52,7 +54,8 @@ const api: DesktopApi = {
     evidenceDataUrl: (evidenceId) => ipcRenderer.invoke('gui:evidenceDataUrl', evidenceId)
   },
   artifacts: {
-    create: (input) => ipcRenderer.invoke('artifacts:create', input)
+    create: (input) => ipcRenderer.invoke('artifacts:create', input),
+    export: (id) => ipcRenderer.invoke('artifacts:export', id)
   },
   avatars: {
     choose: () => ipcRenderer.invoke('avatars:choose')
@@ -62,9 +65,15 @@ const api: DesktopApi = {
     signIn: () => ipcRenderer.invoke('auth:signIn'),
     signOut: () => ipcRenderer.invoke('auth:signOut')
   },
+  data: {
+    createBackup: () => ipcRenderer.invoke('data:createBackup'),
+    restoreBackup: () => ipcRenderer.invoke('data:restoreBackup'),
+    revealLocalData: () => ipcRenderer.invoke('data:revealLocalData')
+  },
   app: {
     openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
-    revealPath: (path) => ipcRenderer.invoke('app:revealPath', path)
+    revealPath: (path) => ipcRenderer.invoke('app:revealPath', path),
+    getVersion: () => ipcRenderer.invoke('app:getVersion')
   },
   events: {
     subscribe: (listener) => {

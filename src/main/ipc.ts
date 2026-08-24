@@ -1,8 +1,12 @@
+import { join } from 'node:path'
 import { readFile, stat } from 'node:fs/promises'
-import { dialog, ipcMain, shell } from 'electron'
+import { randomUUID } from 'node:crypto'
+import { app, dialog, ipcMain, shell } from 'electron'
 import { z } from 'zod'
 import type { CodexService } from './services/codex-service'
 import { avatarImageMime, MAX_AVATAR_BYTES } from './services/avatar-image'
+import { MAX_CHAT_IMAGES, validateChatImagePath, type ResolvedChatImage } from './services/chat-attachments'
+import { writePrivateFile } from './services/data-recovery'
 
 const grantsSchema = z.object({
   readableRoots: z.array(z.string()),
@@ -71,12 +75,54 @@ const guiSessionInputSchema = z.object({
   maxRetries: z.number().int().min(0).max(2)
 })
 
-export function registerIpc(service: CodexService): void {
+export interface IpcSystemActions {
+  dataDirectory: string
+  defaultBackupDirectory: string
+  createBackup: (destination: string) => Promise<string>
+  restoreBackup: (source: string) => Promise<void>
+}
+
+export function registerIpc(service: CodexService, system: IpcSystemActions): void {
+  const selectedChatImages = new Map<string, ResolvedChatImage>()
   ipcMain.handle('snapshot:get', (_event, agentId?: string) => service.getSnapshot(agentId ? idSchema.parse(agentId) : undefined))
   ipcMain.handle('agents:create', (_event, input) => service.createAgent(agentInputSchema.parse(input)))
   ipcMain.handle('agents:update', (_event, id, input) => service.updateAgent(idSchema.parse(id), agentInputSchema.parse(input)))
   ipcMain.handle('agents:archive', (_event, id) => service.archiveAgent(idSchema.parse(id)))
-  ipcMain.handle('chat:send', (_event, agentId, message) => service.startMessage(idSchema.parse(agentId), z.string().trim().min(1).max(100_000).parse(message)))
+  ipcMain.handle('chat:chooseImages', async () => {
+    const paths = process.env.SPLITTBOT_TEST_ATTACHMENT_PATH
+      ? [process.env.SPLITTBOT_TEST_ATTACHMENT_PATH]
+      : (await dialog.showOpenDialog({
+          title: 'Attach images to this task',
+          properties: ['openFile', 'multiSelections'],
+          filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }]
+        })).filePaths
+    if (!paths.length) return []
+    if (paths.length > MAX_CHAT_IMAGES) throw new Error(`Attach no more than ${MAX_CHAT_IMAGES} images to one task.`)
+    const images = await Promise.all(paths.map(validateChatImagePath))
+    return images.map((image) => {
+      const id = randomUUID()
+      selectedChatImages.set(id, image)
+      const timer = setTimeout(() => selectedChatImages.delete(id), 30 * 60_000)
+      timer.unref()
+      return { id, type: image.type, name: image.name, size: image.size }
+    })
+  })
+  ipcMain.handle('chat:send', async (_event, agentId, message, attachmentIds) => {
+    const ids = z.array(idSchema).max(MAX_CHAT_IMAGES).refine((values) => new Set(values).size === values.length, 'Attached images must be unique.').optional().parse(attachmentIds) ?? []
+    const selected = ids.map((id) => {
+      const image = selectedChatImages.get(id)
+      if (!image) throw new Error('An attached image expired or was not selected through SplittBot. Attach it again.')
+      return image
+    })
+    const attachments = await Promise.all(selected.map(async (image) => {
+      const current = await validateChatImagePath(image.path)
+      if (current.name !== image.name || current.size !== image.size) throw new Error(`${image.name} changed after it was selected. Attach it again.`)
+      return current
+    }))
+    const result = await service.startMessage(idSchema.parse(agentId), z.string().trim().max(100_000).parse(message), attachments)
+    ids.forEach((id) => selectedChatImages.delete(id))
+    return result
+  })
   ipcMain.handle('chat:cancel', (_event, runId) => service.cancelRun(idSchema.parse(runId)))
   ipcMain.handle('approvals:resolve', (_event, approvalId, decision) => service.resolveApproval(idSchema.parse(approvalId), z.enum(['approve', 'decline', 'cancel']).parse(decision)))
   ipcMain.handle('connectors:refresh', () => service.refreshIntegrations())
@@ -90,6 +136,7 @@ export function registerIpc(service: CodexService): void {
   ipcMain.handle('routines:update', (_event, id, input) => service.updateRoutine(idSchema.parse(id), routineInputSchema.parse(input)))
   ipcMain.handle('routines:setStatus', (_event, id, status) => service.setRoutineStatus(idSchema.parse(id), z.enum(['active', 'paused']).parse(status)))
   ipcMain.handle('routines:runNow', (_event, id) => service.runRoutineNow(idSchema.parse(id)))
+  ipcMain.handle('routines:delete', (_event, id) => service.deleteRoutine(idSchema.parse(id)))
   ipcMain.handle('notifications:markRead', (_event, id) => service.markNotificationRead(idSchema.parse(id)))
   ipcMain.handle('notifications:markAllRead', () => service.markAllNotificationsRead())
   ipcMain.handle('shortcuts:prepare', (_event, agentId, name, input) => service.prepareShortcut(idSchema.parse(agentId), z.string().trim().min(1).max(180).parse(name), z.string().max(100_000).parse(input)))
@@ -106,6 +153,20 @@ export function registerIpc(service: CodexService): void {
   ipcMain.handle('artifacts:create', (_event, input) => {
     const parsed = z.object({ agentId: idSchema, runId: idSchema.nullable().optional(), name: z.string().trim().min(1).max(180), content: z.string().min(1).max(1_000_000) }).parse(input)
     return service.createArtifact(parsed)
+  })
+  ipcMain.handle('artifacts:export', async (_event, id) => {
+    const artifact = service.getArtifactForExport(idSchema.parse(id))
+    const safeName = artifact.name.replace(/[^A-Za-z0-9 _.-]/g, '').trim().slice(0, 120) || 'SplittBot artifact'
+    const result = process.env.SPLITTBOT_TEST_ARTIFACT_PATH
+      ? { canceled: false, filePath: process.env.SPLITTBOT_TEST_ARTIFACT_PATH }
+      : await dialog.showSaveDialog({
+          title: 'Export SplittBot artifact',
+          defaultPath: join(system.defaultBackupDirectory, `${safeName}.md`),
+          filters: [{ name: 'Markdown', extensions: ['md'] }, { name: 'Plain text', extensions: ['txt'] }]
+        })
+    if (result.canceled || !result.filePath) return null
+    await writePrivateFile(result.filePath, Buffer.from(artifact.content, 'utf8'))
+    return { path: result.filePath }
   })
   ipcMain.handle('avatars:choose', async () => {
     const result = await dialog.showOpenDialog({
@@ -125,6 +186,44 @@ export function registerIpc(service: CodexService): void {
   ipcMain.handle('auth:refresh', () => service.refreshAccount())
   ipcMain.handle('auth:signIn', () => service.signIn())
   ipcMain.handle('auth:signOut', () => service.signOut())
+  ipcMain.handle('data:createBackup', async () => {
+    const defaultName = `SplittBot Backup ${new Date().toISOString().slice(0, 10)}.sqlite`
+    const result = process.env.SPLITTBOT_TEST_BACKUP_PATH
+      ? { canceled: false, filePath: process.env.SPLITTBOT_TEST_BACKUP_PATH }
+      : await dialog.showSaveDialog({
+          title: 'Create a SplittBot backup',
+          defaultPath: join(system.defaultBackupDirectory, defaultName),
+          filters: [{ name: 'SplittBot SQLite backup', extensions: ['sqlite'] }]
+        })
+    if (result.canceled || !result.filePath) return null
+    return { path: await system.createBackup(result.filePath) }
+  })
+  ipcMain.handle('data:restoreBackup', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Restore a SplittBot backup',
+      properties: ['openFile'],
+      filters: [{ name: 'SplittBot SQLite backup', extensions: ['sqlite'] }]
+    })
+    const source = result.filePaths[0]
+    if (result.canceled || !source) return null
+    const confirmation = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Restore SplittBot backup?',
+      message: 'SplittBot will stop active work, preserve the current database as a safety copy, restore the selected backup, and restart.',
+      detail: 'This changes local agent profiles, conversations, grants, routines, approvals, artifacts, and audit history.',
+      buttons: ['Cancel', 'Restore and restart'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    })
+    if (confirmation.response !== 1) return null
+    await system.restoreBackup(source)
+    return { restored: true }
+  })
+  ipcMain.handle('data:revealLocalData', async () => {
+    const error = await shell.openPath(system.dataDirectory)
+    if (error) throw new Error(error)
+  })
   ipcMain.handle('app:openExternal', async (_event, value) => {
     const url = new URL(z.string().parse(value))
     if (url.protocol !== 'https:') throw new Error('Only HTTPS links may be opened.')
@@ -134,4 +233,5 @@ export function registerIpc(service: CodexService): void {
     const path = z.string().min(1).parse(value)
     shell.showItemInFolder(path)
   })
+  ipcMain.handle('app:getVersion', () => app.getVersion())
 }

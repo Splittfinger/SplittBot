@@ -11,6 +11,7 @@ test('packaged and locally signed macOS app launches with isolated renderer', as
     .find(existsSync)
   expect(appBundle).toBeTruthy()
   const executable = join(appBundle!, 'Contents', 'MacOS', 'SplittBot')
+  expect(existsSync(join(appBundle!, 'Contents', 'Resources', 'icon.icns'))).toBe(true)
   const dataDirectory = await mkdtemp(join(tmpdir(), 'splittbot-packaged-'))
   const application = await electron.launch({
     executablePath: executable,

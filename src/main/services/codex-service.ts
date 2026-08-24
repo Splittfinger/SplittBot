@@ -29,6 +29,7 @@ import { LocalAutomationService } from './local-automation'
 import { GuiAutomationBroker, validateGuiSessionInput } from './gui-automation'
 import { computeNextRun, nextAfterNow } from './schedule'
 import { resolveSkillDisplayName } from './skill-display-name'
+import type { ResolvedChatImage } from './chat-attachments'
 
 interface ActiveRun {
   runId: string
@@ -262,16 +263,19 @@ export class CodexService extends EventEmitter {
     this.emitEvent({ type: 'data:changed' })
   }
 
-  async startMessage(agentId: string, text: string): Promise<{ runId: string }> {
+  async startMessage(agentId: string, text: string, attachments: ResolvedChatImage[] = []): Promise<{ runId: string }> {
     const normalized = text.trim()
-    if (!normalized) throw new Error('Message cannot be empty.')
+    if (!normalized && !attachments.length) throw new Error('Message or attachment is required.')
     const agent = this.requireAgent(agentId)
-    const run = await this.store.createRun(agent.id, normalized)
-    await this.store.addMessage({ agentId, runId: run.id, role: 'user', kind: 'text', content: normalized })
-    await this.store.addAudit({ type: 'run.queued', actor: 'user', agentId, runId: run.id, summary: `Queued a task for ${agent.name}`, detail: {} })
+    const prompt = normalized || 'Describe and analyze the attached image or images.'
+    const attachmentLabel = attachments.length ? `\n\n[Attached images: ${attachments.map((item) => item.name).join(', ')}]` : ''
+    const run = await this.store.createRun(agent.id, `${prompt}${attachmentLabel}`)
+    await this.store.addMessage({ agentId, runId: run.id, role: 'user', kind: 'text', content: `${prompt}${attachmentLabel}` })
+    await this.store.addAudit({ type: 'run.queued', actor: 'user', agentId, runId: run.id, summary: `Queued a task for ${agent.name}`, detail: { attachments: attachments.map(({ name, size, type }) => ({ name, size, type })) } })
+    if (attachments.length) await this.store.addMessage({ agentId, runId: run.id, role: 'system', kind: 'status', content: `${attachments.length} user-selected image${attachments.length === 1 ? '' : 's'} attached to ${agent.name}’s turn. Teammates receive the task text, while ${agent.name} receives the images directly.` })
     this.emitEvent({ type: 'run:started', runId: run.id, agentId })
     this.emitEvent({ type: 'data:changed' })
-    void this.executeRun(run.id, agent, normalized)
+    void this.executeRun(run.id, agent, prompt, attachments)
     return { runId: run.id }
   }
 
@@ -418,6 +422,21 @@ export class CodexService extends EventEmitter {
     await this.store.addAudit({ type: 'routine.status', actor: 'user', agentId: routine.agentId, runId: null, summary: `${status === 'active' ? 'Resumed' : 'Paused'} routine ${routine.title}`, detail: { status } })
     this.emitEvent({ type: 'data:changed' })
     if (status === 'active') void this.processSchedules(true)
+  }
+
+  async deleteRoutine(id: string): Promise<void> {
+    const routine = this.store.getRoutine(id)
+    if (!routine) throw new Error('Routine not found.')
+    if (this.runningRoutineIds.has(id)) throw new Error('Wait for the current routine attempt to finish before deleting it.')
+    await this.store.deleteRoutine(id)
+    await this.store.addAudit({ type: 'routine.deleted', actor: 'user', agentId: routine.agentId, runId: null, summary: `Deleted routine ${routine.title}`, detail: {} })
+    this.emitEvent({ type: 'data:changed' })
+  }
+
+  getArtifactForExport(id: string) {
+    const artifact = this.store.listArtifacts(10_000).find((item) => item.id === id)
+    if (!artifact) throw new Error('Artifact not found.')
+    return artifact
   }
 
   async runRoutineNow(id: string): Promise<void> {
@@ -835,7 +854,7 @@ export class CodexService extends EventEmitter {
     }))
   }
 
-  private async executeRun(runId: string, originalAgent: Agent, input: string): Promise<void> {
+  private async executeRun(runId: string, originalAgent: Agent, input: string, attachments: ResolvedChatImage[] = []): Promise<void> {
     try {
       await this.client.start()
       const agent = this.requireAgent(originalAgent.id)
@@ -862,7 +881,7 @@ export class CodexService extends EventEmitter {
 
       if (this.store.getRun(runId)?.status === 'cancelled') return
       const finalInput = contributions.length ? synthesisPrompt(input, contributions) : input
-      const result = await this.runAgentTurn(runId, agent, finalInput, runId)
+      const result = await this.runAgentTurn(runId, agent, finalInput, runId, attachments)
       if (this.store.getRun(runId)?.status === 'cancelled') return
       await this.finishRun(runId, agent, result, true)
     } catch (error) {
@@ -923,12 +942,13 @@ export class CodexService extends EventEmitter {
     }
   }
 
-  private async runAgentTurn(runId: string, initialAgent: Agent, input: string, controllerRunId: string): Promise<AgentTurnResult> {
+  private async runAgentTurn(runId: string, initialAgent: Agent, input: string, controllerRunId: string, attachments: ResolvedChatImage[] = []): Promise<AgentTurnResult> {
     let agent = this.requireAgent(initialAgent.id)
     const threadId = await this.ensureThread(agent)
     agent = this.requireAgent(agent.id)
     await this.store.updateRun(runId, { threadId, status: 'running' })
     const turnInput: Array<Record<string, unknown>> = [{ type: 'text', text: input }]
+    for (const attachment of attachments) turnInput.push({ type: 'localImage', path: attachment.path, detail: 'auto' })
     for (const skill of await this.resolveRequestedSkills(agent, input)) turnInput.push({ type: 'skill', name: skill.name, path: skill.path })
     const response = await this.client.request<{ turn: { id: string } }>('turn/start', {
       threadId,
