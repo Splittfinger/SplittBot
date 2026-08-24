@@ -10,7 +10,7 @@ Phase 5 completes the everyday product workflows that sit above the verified loc
 - Attach up to four validated local PNG, JPEG, or WebP images to a direct agent turn.
 - Keep attachment paths in the main process, use opaque renderer IDs, and record metadata-only provenance in the audit history.
 
-## Next implementation slices
+## Delivered implementation slices
 
 ### 5A — file-aware conversations (images delivered)
 
@@ -47,8 +47,10 @@ Phase 5 completes the everyday product workflows that sit above the verified loc
 - Exercise sleep/wake routine catch-up and notifications.
 - Record actual results without treating a deterministic adapter or an open permission panel as proof of access.
 
+The acceptance dashboard and non-sending iMessage check are implemented. The dated results and any machine-level blockers are recorded in [phase-5-acceptance.md](phase-5-acceptance.md). A blocked permission or OAuth result is an honest acceptance outcome, not an implementation failure and not a pass.
+
 ## Phase 5 completion gate
 
 Phase 5 is complete only when the file, workspace, approval, connector, memory, and real-Mac acceptance slices above have implementation tests and a packaged-app verification record. Marketplace, mobile, enterprise SSO, and cloud execution remain separate future-edition decisions.
 
-The current Phase 5 image slice passed the deterministic desktop flow and exact packaged-app launch on August 24, 2026. The separate live Codex smoke test also passed ChatGPT authentication and thread resume; it is not a substitute for the outstanding real-Mac permission and connector checks in 5E.
+The complete Phase 5 implementation passed unit, deterministic desktop, package/signature, and exact packaged-app launch checks on August 24, 2026. Live ChatGPT authentication passed. Accessibility and Screen Recording were denied for the packaged bundle, and no existing OAuth access was modified without an action-time confirmation. Those real-Mac blockers remain visible in the acceptance record rather than being reported as passes.

@@ -7,6 +7,9 @@ import type {
   Agent,
   AgentGrants,
   AgentInput,
+  AgentMemory,
+  AgentMemoryPolicyInput,
+  AcceptanceCheck,
   Approval,
   ApprovalStatus,
   Artifact,
@@ -27,7 +30,10 @@ import type {
   RoutineAttemptStatus,
   RoutineInput,
   RoutineStatus,
-  SkillReviewStatus
+  SkillReviewStatus,
+  Workspace,
+  WorkspaceEvent,
+  WorkspaceInput
 } from '../../shared/contracts'
 import { writePrivateFile } from '../services/data-recovery'
 
@@ -240,6 +246,42 @@ export class SqliteStore {
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS workspaces (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        objective TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        current_owner_agent_id TEXT NOT NULL REFERENCES agents(id),
+        member_ids_json TEXT NOT NULL,
+        auto_coordinate INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS workspace_events (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+        run_id TEXT,
+        agent_id TEXT,
+        type TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        detail_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS agent_memories (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id),
+        content TEXT NOT NULL,
+        source TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS acceptance_checks (
+        key TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        status TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        evidence TEXT,
+        checked_at TEXT
+      );
       CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent_id, started_at);
       CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at);
@@ -250,11 +292,15 @@ export class SqliteStore {
       CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at);
       CREATE INDEX IF NOT EXISTS idx_gui_sessions_created ON gui_sessions(created_at);
       CREATE INDEX IF NOT EXISTS idx_gui_evidence_session ON gui_evidence(session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_workspace_events_workspace ON workspace_events(workspace_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_memories_agent ON agent_memories(agent_id, created_at);
     `)
     this.ensureColumn('agents', 'reasoning_effort', 'TEXT')
     this.ensureColumn('agents', 'avatar_type', "TEXT NOT NULL DEFAULT 'initials'")
     this.ensureColumn('agents', 'avatar_value', 'TEXT')
     this.ensureColumn('agents', 'collaborator_ids_json', "TEXT NOT NULL DEFAULT '[]'")
+    this.ensureColumn('agents', 'memory_mode', "TEXT NOT NULL DEFAULT 'enabled'")
+    this.ensureColumn('agents', 'memory_retention_days', 'INTEGER')
     this.ensureColumn('gui_sessions', 'max_retries', 'INTEGER NOT NULL DEFAULT 0')
   }
 
@@ -368,6 +414,29 @@ export class SqliteStore {
     await this.mutate(`UPDATE agents SET status = 'archived', updated_at = ? WHERE id = ?`, [new Date().toISOString(), id])
   }
 
+  async setAgentMemoryPolicy(id: string, input: AgentMemoryPolicyInput): Promise<void> {
+    await this.mutate(
+      `UPDATE agents SET memory_mode = ?, memory_retention_days = ?, updated_at = ? WHERE id = ?`,
+      [input.mode, input.retentionDays, new Date().toISOString(), id]
+    )
+  }
+
+  async removeConnectorGrant(name: string): Promise<void> {
+    this.db.run('BEGIN')
+    try {
+      for (const agent of this.listAgents(true)) {
+        if (!agent.grants.allowedConnectors.includes(name)) continue
+        const grants = { ...agent.grants, allowedConnectors: agent.grants.allowedConnectors.filter((entry) => entry !== name) }
+        this.db.run(`UPDATE agents SET grants_json = ?, updated_at = ? WHERE id = ?`, [JSON.stringify(grants), new Date().toISOString(), agent.id])
+      }
+      this.db.run('COMMIT')
+      await this.persist()
+    } catch (error) {
+      this.db.run('ROLLBACK')
+      throw error
+    }
+  }
+
   listMessages(agentId?: string, limit = 300): Message[] {
     const rows = agentId
       ? this.all(`SELECT * FROM messages WHERE agent_id = ? ORDER BY created_at ASC LIMIT ?`, [agentId, limit])
@@ -447,6 +516,54 @@ export class SqliteStore {
     )
   }
 
+  listWorkspaces(includeArchived = false): Workspace[] {
+    const where = includeArchived ? '' : `WHERE status != 'archived'`
+    return this.all(`SELECT * FROM workspaces ${where} ORDER BY updated_at DESC`).map(mapWorkspace)
+  }
+
+  getWorkspace(id: string): Workspace | null {
+    const row = this.one(`SELECT * FROM workspaces WHERE id = ?`, [id])
+    return row ? mapWorkspace(row) : null
+  }
+
+  async createWorkspace(input: WorkspaceInput): Promise<Workspace> {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    await this.mutate(
+      `INSERT INTO workspaces (id, name, objective, status, current_owner_agent_id, member_ids_json, auto_coordinate, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+      [id, input.name, input.objective, input.currentOwnerAgentId, JSON.stringify(input.memberIds), input.autoCoordinate ? 1 : 0, now, now]
+    )
+    return this.getWorkspace(id)!
+  }
+
+  async updateWorkspace(id: string, input: WorkspaceInput): Promise<Workspace> {
+    await this.mutate(
+      `UPDATE workspaces SET name = ?, objective = ?, current_owner_agent_id = ?, member_ids_json = ?, auto_coordinate = ?, updated_at = ? WHERE id = ?`,
+      [input.name, input.objective, input.currentOwnerAgentId, JSON.stringify(input.memberIds), input.autoCoordinate ? 1 : 0, new Date().toISOString(), id]
+    )
+    const workspace = this.getWorkspace(id)
+    if (!workspace) throw new Error('Workspace not found.')
+    return workspace
+  }
+
+  async setWorkspaceStatus(id: string, status: Workspace['status']): Promise<void> {
+    await this.mutate(`UPDATE workspaces SET status = ?, updated_at = ? WHERE id = ?`, [status, new Date().toISOString(), id])
+  }
+
+  listWorkspaceEvents(limit = 500): WorkspaceEvent[] {
+    return this.all(`SELECT * FROM workspace_events ORDER BY created_at DESC LIMIT ?`, [limit]).map(mapWorkspaceEvent)
+  }
+
+  async addWorkspaceEvent(input: Omit<WorkspaceEvent, 'id' | 'createdAt'>): Promise<WorkspaceEvent> {
+    const event: WorkspaceEvent = { ...input, id: randomUUID(), createdAt: new Date().toISOString() }
+    await this.mutate(
+      `INSERT INTO workspace_events (id, workspace_id, run_id, agent_id, type, summary, detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [event.id, event.workspaceId, event.runId, event.agentId, event.type, event.summary, JSON.stringify(event.detail), event.createdAt]
+    )
+    return event
+  }
+
   listApprovals(limit = 100): Approval[] {
     return this.all(`SELECT * FROM approvals ORDER BY created_at DESC LIMIT ?`, [limit]).map(mapApproval)
   }
@@ -456,9 +573,9 @@ export class SqliteStore {
     return row ? mapApproval(row) : null
   }
 
-  async createApproval(input: Omit<Approval, 'id' | 'status' | 'decision' | 'createdAt' | 'resolvedAt'>): Promise<Approval> {
+  async createApproval(input: Omit<Approval, 'id' | 'status' | 'decision' | 'createdAt' | 'resolvedAt' | 'impact'>): Promise<Approval> {
     const approval: Approval = {
-      ...input, id: randomUUID(), status: 'pending', decision: null,
+      ...input, impact: approvalImpact(input.method, input.request), id: randomUUID(), status: 'pending', decision: null,
       createdAt: new Date().toISOString(), resolvedAt: null
     }
     await this.mutate(
@@ -471,6 +588,11 @@ export class SqliteStore {
 
   async resolveApproval(id: string, status: ApprovalStatus, decision: string): Promise<void> {
     await this.mutate(`UPDATE approvals SET status = ?, decision = ?, resolved_at = ? WHERE id = ?`, [status, decision, new Date().toISOString(), id])
+  }
+
+  async updateApprovalRequest(id: string, request: Record<string, unknown>, summary?: string): Promise<void> {
+    if (summary === undefined) await this.mutate(`UPDATE approvals SET request_json = ? WHERE id = ?`, [JSON.stringify(request), id])
+    else await this.mutate(`UPDATE approvals SET request_json = ?, summary = ? WHERE id = ?`, [JSON.stringify(request), summary, id])
   }
 
   listArtifacts(limit = 100): Artifact[] {
@@ -635,6 +757,54 @@ export class SqliteStore {
     await this.mutate(`UPDATE notifications SET is_read = 1`)
   }
 
+  listAgentMemories(agentId?: string): AgentMemory[] {
+    const rows = agentId
+      ? this.all(`SELECT * FROM agent_memories WHERE agent_id = ? ORDER BY created_at DESC`, [agentId])
+      : this.all(`SELECT * FROM agent_memories ORDER BY created_at DESC`)
+    return rows.map(mapAgentMemory)
+  }
+
+  getAgentMemory(id: string): AgentMemory | null {
+    const row = this.one(`SELECT * FROM agent_memories WHERE id = ?`, [id])
+    return row ? mapAgentMemory(row) : null
+  }
+
+  async createAgentMemory(agentId: string, content: string, source: AgentMemory['source'] = 'user'): Promise<AgentMemory> {
+    const memory: AgentMemory = { id: randomUUID(), agentId, content, source, createdAt: new Date().toISOString() }
+    await this.mutate(
+      `INSERT INTO agent_memories (id, agent_id, content, source, created_at) VALUES (?, ?, ?, ?, ?)`,
+      [memory.id, memory.agentId, memory.content, memory.source, memory.createdAt]
+    )
+    return memory
+  }
+
+  async deleteAgentMemory(id: string): Promise<void> {
+    await this.mutate(`DELETE FROM agent_memories WHERE id = ?`, [id])
+  }
+
+  async clearAgentMemories(agentId: string): Promise<void> {
+    await this.mutate(`DELETE FROM agent_memories WHERE agent_id = ?`, [agentId])
+  }
+
+  async pruneAgentMemories(agentId: string, retentionDays: number): Promise<number> {
+    const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString()
+    const count = Number(this.one(`SELECT COUNT(*) AS count FROM agent_memories WHERE agent_id = ? AND created_at < ?`, [agentId, cutoff])?.count ?? 0)
+    await this.mutate(`DELETE FROM agent_memories WHERE agent_id = ? AND created_at < ?`, [agentId, cutoff])
+    return count
+  }
+
+  listAcceptanceChecks(): AcceptanceCheck[] {
+    return this.all(`SELECT * FROM acceptance_checks ORDER BY key ASC`).map(mapAcceptanceCheck)
+  }
+
+  async recordAcceptanceCheck(input: AcceptanceCheck): Promise<void> {
+    await this.mutate(
+      `INSERT INTO acceptance_checks (key, label, status, detail, evidence, checked_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET label = excluded.label, status = excluded.status, detail = excluded.detail, evidence = excluded.evidence, checked_at = excluded.checked_at`,
+      [input.key, input.label, input.status, input.detail, input.evidence, input.checkedAt]
+    )
+  }
+
   listGuiSessions(limit = 100): GuiSession[] {
     return this.all(`SELECT * FROM gui_sessions ORDER BY created_at DESC LIMIT ?`, [limit]).map(mapGuiSession)
   }
@@ -714,6 +884,8 @@ function mapAgent(row: SqlRow): Agent {
     avatar: { type: (row.avatar_type || 'initials') as Agent['avatar']['type'], value: row.avatar_value ? String(row.avatar_value) : null },
     collaboratorIds: parseJson(row.collaborator_ids_json, []),
     cwd: String(row.cwd), accessMode: row.access_mode as Agent['accessMode'], threadId: row.thread_id ? String(row.thread_id) : null,
+    memoryMode: (row.memory_mode || 'enabled') as Agent['memoryMode'],
+    memoryRetentionDays: row.memory_retention_days === null || row.memory_retention_days === undefined ? null : Number(row.memory_retention_days),
     grants: { ...DEFAULT_GRANTS, ...storedGrants }, createdAt: String(row.created_at), updatedAt: String(row.updated_at)
   }
 }
@@ -735,7 +907,33 @@ function mapHandoff(row: SqlRow): Handoff {
 }
 
 function mapApproval(row: SqlRow): Approval {
-  return { id: String(row.id), agentId: row.agent_id ? String(row.agent_id) : null, runId: row.run_id ? String(row.run_id) : null, requestId: String(row.request_id), method: String(row.method), title: String(row.title), summary: String(row.summary), request: parseJson(row.request_json, {}), status: row.status as ApprovalStatus, decision: row.decision ? String(row.decision) : null, createdAt: String(row.created_at), resolvedAt: row.resolved_at ? String(row.resolved_at) : null }
+  const request = parseJson<Record<string, unknown>>(row.request_json, {})
+  return { id: String(row.id), agentId: row.agent_id ? String(row.agent_id) : null, runId: row.run_id ? String(row.run_id) : null, requestId: String(row.request_id), method: String(row.method), title: String(row.title), summary: String(row.summary), impact: approvalImpact(String(row.method), request), request, status: row.status as ApprovalStatus, decision: row.decision ? String(row.decision) : null, createdAt: String(row.created_at), resolvedAt: row.resolved_at ? String(row.resolved_at) : null }
+}
+
+function approvalImpact(method: string, request: Record<string, unknown>): Approval['impact'] {
+  if (method === 'local.shortcut.run') return { targetResource: `Shortcut “${String(request.name ?? '')}”`, dataLeavingMac: 'Only the exact displayed Shortcut input, if the Shortcut itself uses network actions.', reversibility: 'Depends on the Shortcut; SplittBot cannot undo it.', afterApproval: 'Runs the named local Shortcut once and saves its text result as an artifact.', editableFields: ['input'] }
+  if (method === 'local.gui.session') return { targetResource: String(request.targetApp ?? 'Local Mac app'), dataLeavingMac: 'No data is sent by SplittBot unless an approved step types it into a networked app.', reversibility: 'GUI effects may not be reversible; use Take Over or Emergency Stop to halt remaining steps.', afterApproval: `Runs ${Array.isArray(request.steps) ? request.steps.length : 0} bound GUI steps in the serialized control lane.`, editableFields: [] }
+  if (method.includes('commandExecution')) return { targetResource: String(request.cwd ?? 'Local command environment'), dataLeavingMac: 'Command-defined; review the exact command and network grant.', reversibility: 'Commands may change files or external systems and may not be reversible.', afterApproval: 'Returns one approval decision to the active Codex turn.', editableFields: [] }
+  if (method.includes('fileChange')) return { targetResource: String(request.cwd ?? 'Approved local workspace'), dataLeavingMac: 'None through the file edit itself.', reversibility: 'Local edits can usually be reviewed or reverted, but are not automatically rolled back.', afterApproval: 'Allows the displayed file change within the current turn.', editableFields: [] }
+  if (method === 'mcpServer/elicitation/request') return { targetResource: String(request.serverName ?? 'Connector'), dataLeavingMac: String(request.message ?? 'The connector receives the approved response.'), reversibility: 'Connector-side effects depend on the request.', afterApproval: 'Returns the decision to the requesting connector.', editableFields: [] }
+  return { targetResource: 'Current Codex turn', dataLeavingMac: 'Only the displayed response or temporary permission.', reversibility: 'No action occurs until the active turn receives the response.', afterApproval: 'Returns the decision to the pending Codex request.', editableFields: [] }
+}
+
+function mapWorkspace(row: SqlRow): Workspace {
+  return { id: String(row.id), name: String(row.name), objective: String(row.objective), status: row.status as Workspace['status'], currentOwnerAgentId: String(row.current_owner_agent_id), memberIds: parseJson(row.member_ids_json, []), autoCoordinate: Boolean(row.auto_coordinate), createdAt: String(row.created_at), updatedAt: String(row.updated_at) }
+}
+
+function mapWorkspaceEvent(row: SqlRow): WorkspaceEvent {
+  return { id: String(row.id), workspaceId: String(row.workspace_id), runId: row.run_id ? String(row.run_id) : null, agentId: row.agent_id ? String(row.agent_id) : null, type: row.type as WorkspaceEvent['type'], summary: String(row.summary), detail: parseJson(row.detail_json, {}), createdAt: String(row.created_at) }
+}
+
+function mapAgentMemory(row: SqlRow): AgentMemory {
+  return { id: String(row.id), agentId: String(row.agent_id), content: String(row.content), source: row.source as AgentMemory['source'], createdAt: String(row.created_at) }
+}
+
+function mapAcceptanceCheck(row: SqlRow): AcceptanceCheck {
+  return { key: row.key as AcceptanceCheck['key'], label: String(row.label), status: row.status as AcceptanceCheck['status'], detail: String(row.detail), evidence: row.evidence ? String(row.evidence) : null, checkedAt: row.checked_at ? String(row.checked_at) : null }
 }
 
 function mapArtifact(row: SqlRow): Artifact {
