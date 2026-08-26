@@ -90,7 +90,7 @@ lines.on('line', (line) => {
     if (text.includes('REQUEST_APPROVAL')) {
       const requestId = 90_000 + nextTurn
       pendingApproval = { requestId, threadId: params.threadId, turnId, text }
-      return setTimeout(() => send({ method: 'item/commandExecution/requestApproval', id: requestId, params: { threadId: params.threadId, turnId, itemId: `cmd_${turnId}`, reason: 'The deterministic test requested approval.', command: ['echo', 'approved'], cwd: process.cwd() } }), 15)
+      return setTimeout(() => send({ method: 'item/commandExecution/requestApproval', id: requestId, params: { threadId: params.threadId, turnId, itemId: `cmd_${turnId}`, reason: 'The deterministic test requested approval.', command: ['echo', 'approved'], cwd: process.cwd() } }), 0)
     }
     return setTimeout(() => completeTurn(params.threadId, turnId, text), 20)
   }

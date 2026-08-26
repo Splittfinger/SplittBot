@@ -7,6 +7,25 @@ import { SqliteStore } from '../../src/main/db/store'
 const grants = { readableRoots: ['/tmp'], writableRoots: [], allowedCommands: [], allowedApps: [], allowedConnectors: [], allowedConnectorAccounts: [], allowedSkillPaths: [], allowedShortcuts: [], networkAccess: false }
 
 describe('SqliteStore', () => {
+  it('serializes concurrent disk persistence without losing writes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'splittbot-store-concurrent-'))
+    const path = join(directory, 'state.sqlite')
+    let store = await SqliteStore.open(path)
+    const agent = await store.createAgent({ name: 'Atlas', role: 'Chief of Staff', instructions: 'Coordinate safely.', color: '#7657d8', model: null, reasoningEffort: null, avatar: { type: 'initials', value: null }, collaboratorIds: [], cwd: '/tmp', accessMode: 'readOnly', grants })
+    await Promise.all(Array.from({ length: 20 }, async (_, index) => {
+      await Promise.all([
+        store.addMessage({ agentId: agent.id, runId: null, role: 'system', kind: 'status', content: `Concurrent message ${index}` }),
+        store.addAudit({ type: 'concurrent.test', actor: 'system', agentId: agent.id, runId: null, summary: `Concurrent audit ${index}`, detail: { index } })
+      ])
+    }))
+    store.close()
+
+    store = await SqliteStore.open(path)
+    expect(store.listMessages(agent.id)).toHaveLength(20)
+    expect(store.listAudit().filter((event) => event.type === 'concurrent.test')).toHaveLength(20)
+    store.close()
+  })
+
   it('persists agents, messages, runs, artifacts, approvals, and audit events', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'splittbot-store-'))
     const path = join(directory, 'state.sqlite')

@@ -55,6 +55,8 @@ const DEFAULT_GRANTS: AgentGrants = {
 }
 
 export class SqliteStore {
+  private persistQueue: Promise<void> = Promise.resolve()
+
   private constructor(
     private readonly path: string,
     private readonly db: Database
@@ -360,10 +362,14 @@ export class SqliteStore {
 
   private async persist(): Promise<void> {
     if (this.path === ':memory:') return
-    await mkdir(dirname(this.path), { recursive: true })
-    const temporaryPath = `${this.path}.next`
-    await writeFile(temporaryPath, Buffer.from(this.db.export()))
-    await rename(temporaryPath, this.path)
+    const operation = this.persistQueue.then(async () => {
+      await mkdir(dirname(this.path), { recursive: true })
+      const temporaryPath = `${this.path}.next`
+      await writeFile(temporaryPath, Buffer.from(this.db.export()))
+      await rename(temporaryPath, this.path)
+    })
+    this.persistQueue = operation.catch(() => undefined)
+    await operation
   }
 
   private async mutate(sql: string, params: BindParams = []): Promise<void> {

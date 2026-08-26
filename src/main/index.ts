@@ -60,12 +60,12 @@ async function createApplication(): Promise<void> {
   mainWindow = new BrowserWindow({
     width: 1420,
     height: 900,
-    minWidth: 1040,
-    minHeight: 680,
+    minWidth: 900,
+    minHeight: 640,
     show: false,
     title: 'SplittBot',
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#f3f0ea',
+    backgroundColor: '#f2f2f7',
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,

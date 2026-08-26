@@ -30,8 +30,61 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
   let window = await application.firstWindow()
   await expect(window.getByText('Good to see you.')).toBeVisible()
   expect(await window.evaluate(() => typeof (globalThis as { process?: unknown }).process)).toBe('undefined')
+  expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getMinimumSize())).toEqual([900, 640])
+  const displaySession = await window.context().newCDPSession(window)
+  await displaySession.send('Emulation.setDeviceMetricsOverride', { width: 1420, height: 900, deviceScaleFactor: 1, mobile: false })
+  await window.waitForTimeout(100)
+
+  const wideLayout = await window.evaluate(() => {
+    const shell = document.querySelector('.app-shell') as HTMLElement
+    const rail = document.querySelector('.rail') as HTMLElement
+    const teamPane = document.querySelector('.team-pane') as HTMLElement
+    const railLabel = document.querySelector('.rail-label') as HTMLElement
+    const panel = document.querySelector('.panel') as HTMLElement
+    const mainPane = document.querySelector('.main-pane') as HTMLElement
+    const bodyStyle = getComputedStyle(document.body)
+    const railStyle = getComputedStyle(rail)
+    return {
+      section: shell.dataset.section,
+      railWidth: Math.round(rail.getBoundingClientRect().width),
+      teamPaneVisible: getComputedStyle(teamPane).display !== 'none',
+      railLabelVisible: getComputedStyle(railLabel).display !== 'none',
+      railBackground: railStyle.backgroundColor,
+      mainBackground: getComputedStyle(mainPane).backgroundColor,
+      panelMaterial: panel ? getComputedStyle(panel).backdropFilter || getComputedStyle(panel).getPropertyValue('-webkit-backdrop-filter') : 'none',
+      fontFamily: bodyStyle.fontFamily
+    }
+  })
+  expect(wideLayout.section).toBe('home')
+  expect(wideLayout.railWidth).toBeGreaterThan(150)
+  expect(wideLayout.teamPaneVisible).toBe(true)
+  expect(wideLayout.railLabelVisible).toBe(true)
+  expect(wideLayout.railBackground).not.toBe(wideLayout.mainBackground)
+  expect(wideLayout.panelMaterial).toBe('none')
+  expect(wideLayout.fontFamily.toLowerCase()).not.toContain('georgia')
+
+  await displaySession.send('Emulation.setDeviceMetricsOverride', { width: 980, height: 760, deviceScaleFactor: 1, mobile: false })
+  await window.waitForTimeout(150)
+  const compactHomeLayout = await window.evaluate(() => {
+    const rail = document.querySelector('.rail') as HTMLElement
+    const teamPane = document.querySelector('.team-pane') as HTMLElement
+    const railLabel = document.querySelector('.rail-label') as HTMLElement
+    return {
+      railWidth: Math.round(rail.getBoundingClientRect().width),
+      teamPaneVisible: getComputedStyle(teamPane).display !== 'none',
+      railLabelVisible: getComputedStyle(railLabel).display !== 'none'
+    }
+  })
+  expect(compactHomeLayout.railWidth).toBe(72)
+  expect(compactHomeLayout.teamPaneVisible).toBe(false)
+  expect(compactHomeLayout.railLabelVisible).toBe(false)
 
   await window.getByLabel('Agents').click()
+  await expect(window.getByLabel('Message Atlas')).toBeVisible()
+  expect(await window.locator('.team-pane').evaluate((pane) => getComputedStyle(pane).display)).toBe('flex')
+  await displaySession.send('Emulation.setDeviceMetricsOverride', { width: 1420, height: 900, deviceScaleFactor: 1, mobile: false })
+  await window.waitForTimeout(150)
+
   const composer = window.getByLabel('Message Atlas')
   const longTask = 'Atlas should read all other agents and give me a detailed summary of everything accomplished today and this week, including every outstanding approval or item that needs my attention.'
   await window.getByLabel('Attach images').click()
@@ -214,6 +267,14 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
   await expect(window.getByText('Deterministic GUI adapter results are not accepted as packaged permission evidence.')).toBeVisible()
   await window.getByRole('button', { name: 'Exercise catch-up path' }).click()
   await expect(window.getByText(/real Mac sleep\/wake cycle/)).toBeVisible()
+  await window.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' })
+  const darkAcceptance = await window.locator('.acceptance-list article').first().evaluate((row) => ({
+    background: getComputedStyle(row).backgroundColor,
+    text: getComputedStyle(row.querySelector('strong') as HTMLElement).color
+  }))
+  expect(darkAcceptance.background).not.toBe('rgb(250, 248, 244)')
+  expect(darkAcceptance.text).not.toBe(darkAcceptance.background)
+  await window.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' })
 
   await window.getByLabel('Agents').click()
   await window.getByRole('button', { name: /Maya Researcher/ }).click()
@@ -234,7 +295,7 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
   await window.getByRole('button', { name: /AT Atlas Chief of Staff/ }).click()
   await window.getByLabel('Message Atlas').fill('After restart')
   await window.getByLabel('Send').click()
-  await expect(window.getByText('FAKE_RESPONSE: After restart')).toBeVisible()
+  await expect(window.getByText('FAKE_RESPONSE: After restart')).toBeVisible({ timeout: 15_000 })
   await application.close()
 
   const protocolLog = await readFile(fakeLog, 'utf8')
