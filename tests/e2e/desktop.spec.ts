@@ -53,6 +53,7 @@ test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and 
   await expect(window.getByText(/approval=accept/)).toBeVisible()
 
   await window.getByLabel('Tools').click()
+  await expect(window.getByRole('heading', { name: 'Demo Docs', exact: true })).toBeVisible()
   await expect(window.getByText('demo_docs', { exact: true })).toBeVisible()
   await window.getByRole('button', { name: 'Add connector' }).click()
   await window.getByLabel('Connector name').fill('extra_docs')
@@ -74,7 +75,7 @@ test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and 
   await window.getByLabel('Agents').click()
   await window.getByRole('button', { name: 'Edit agent' }).click()
   await window.getByLabel('Approved apps').fill('Preview')
-  await window.getByRole('button', { name: 'demo_docs' }).click()
+  await window.getByRole('button', { name: 'Demo Docs' }).click()
   await window.getByRole('button', { name: 'Fake Brief' }).click()
   await window.getByRole('button', { name: 'Save changes' }).click()
 

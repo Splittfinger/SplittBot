@@ -37,6 +37,7 @@ import { LocalAutomationService } from './local-automation'
 import { GuiAutomationBroker, validateGuiSessionInput } from './gui-automation'
 import { computeNextRun, nextAfterNow } from './schedule'
 import { resolveSkillDisplayName } from './skill-display-name'
+import { resolveConnectorDisplayName } from './connector-display-name'
 import type { ResolvedChatImage } from './chat-attachments'
 
 interface ActiveRun {
@@ -927,14 +928,14 @@ export class CodexService extends EventEmitter {
       this.connectorConfigs = new Map(Object.entries(configured))
       const statuses = new Map((statusResult.status === 'fulfilled' ? statusResult.value.data : []).map((status) => [status.name, status]))
       const names = new Set([...Object.keys(configured), ...statuses.keys()])
-      connectors = Array.from(names).sort().map((name) => {
+      connectors = Array.from(names).map((name) => {
         const status = statuses.get(name)
         const config = configured[name] ?? {}
         const configuredByUser = Boolean(configured[name]) && !isCodexRuntimeConnector(name, config)
         const transport: Connector['transport'] = typeof config.command === 'string' ? 'stdio' : typeof config.url === 'string' ? 'streamableHttp' : 'runtime'
         return {
           name,
-          displayName: name,
+          displayName: resolveConnectorDisplayName({ name, serverInfo: status?.serverInfo }),
           pluginId: status?.pluginId ?? null,
           authStatus: status?.authStatus ?? 'unknown',
           enabled: config.enabled !== false,
@@ -948,6 +949,7 @@ export class CodexService extends EventEmitter {
           error: config.enabled === false ? null : status ? null : 'Connector is configured but did not start.'
         }
       })
+      connectors.sort((a, b) => a.displayName.localeCompare(b.displayName) || a.name.localeCompare(b.name))
       const reviews = new Map(this.store.listSkillReviews().map((review) => [review.path, review]))
       const unique = new Map<string, SkillListResult['data'][number]['skills'][number]>()
       for (const entry of skillResult.status === 'fulfilled' ? skillResult.value.data : []) {
