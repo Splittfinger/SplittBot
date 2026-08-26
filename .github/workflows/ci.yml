@@ -26,6 +26,9 @@ jobs:
       - run: npm ci
       - run: npm audit --omit=dev
       - run: npm run verify
+        env:
+          SPLITTBOT_CODEX_BUNDLE_SOURCE: tests/fixtures/fake-codex-runtime.sh
+          SPLITTBOT_ALLOW_NON_MACHO_RUNTIME: "1"
       - name: Upload Playwright diagnostics
         if: failure()
         uses: actions/upload-artifact@v7
