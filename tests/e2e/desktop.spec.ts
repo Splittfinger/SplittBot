@@ -3,7 +3,7 @@ import { mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and safely controls one GUI lane', async () => {
+test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates tools, attaches images, and safely controls one GUI lane', async () => {
   const dataDirectory = await mkdtemp(join(tmpdir(), 'splittbot-e2e-'))
   const fakeLog = join(dataDirectory, 'fake.jsonl')
   const backupPath = join(dataDirectory, 'phase-4-backup.sqlite')
@@ -89,6 +89,16 @@ test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and 
   window.once('dialog', (dialog) => void dialog.accept())
   await extraConnector.getByRole('button', { name: 'Remove' }).click()
   await expect(window.locator('.integration-row').filter({ hasText: 'extra_docs' })).toHaveCount(0)
+  await window.getByRole('button', { name: 'Add account identity' }).click()
+  await window.getByLabel('Account label').fill('Work')
+  await window.getByLabel('Login identifier').fill('work@example.com')
+  await window.getByRole('button', { name: 'Create & authenticate' }).click()
+  await expect(window.getByRole('heading', { name: 'Demo Docs · Work', exact: true })).toBeVisible()
+  await window.getByRole('button', { name: 'Add account identity' }).click()
+  await window.getByLabel('Account label').fill('Personal')
+  await window.getByLabel('Login identifier').fill('personal@example.com')
+  await window.getByRole('button', { name: 'Create & authenticate' }).click()
+  await expect(window.getByRole('heading', { name: 'Demo Docs · Personal', exact: true })).toBeVisible()
   await window.getByRole('button', { name: /Skills ·/ }).click()
   await expect(window.getByRole('heading', { name: 'Fake Brief', exact: true })).toBeVisible()
   await expect(window.getByText('$fake-brief', { exact: true })).toBeVisible()
@@ -97,7 +107,8 @@ test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and 
   await window.getByLabel('Agents').click()
   await window.getByRole('button', { name: 'Edit agent' }).click()
   await window.getByLabel('Approved apps').fill('Preview')
-  await window.getByRole('button', { name: 'Demo Docs' }).click()
+  await window.getByRole('button', { name: 'Demo Docs', exact: true }).click()
+  await window.getByRole('button', { name: 'Demo Docs · Work', exact: true }).click()
   await window.getByRole('button', { name: 'Fake Brief' }).click()
   await window.getByRole('button', { name: 'Save changes' }).click()
 
@@ -158,6 +169,7 @@ test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and 
   await window.getByLabel('Model').selectOption('fake-codex-model')
   await window.getByLabel('AI effort').selectOption('high')
   await window.getByRole('button', { name: 'Avatar 🔬' }).click()
+  await window.getByRole('button', { name: 'Demo Docs · Personal', exact: true }).click()
   await window.getByRole('button', { name: 'Create agent' }).click()
   await expect(window.getByRole('heading', { name: 'Maya', exact: true })).toBeVisible()
   await expect(window.locator('.conversation-header .avatar-emoji')).toHaveText('🔬')
@@ -237,4 +249,11 @@ test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and 
   expect(protocolLog).toContain(`"type":"localImage","path":"${canonicalAttachmentPath}","detail":"auto"`)
   expect(protocolLog).toContain('"type":"skill","name":"fake-brief","path":"/tmp/fake-brief/SKILL.md"')
   expect(protocolLog).toContain('You are collaborating with @Maya')
+  const protocolMessages = protocolLog.trim().split('\n').map((line) => JSON.parse(line) as { method?: string; params?: Record<string, any> })
+  const oauthNames = protocolMessages.filter((message) => message.method === 'mcpServer/oauth/login').map((message) => String(message.params?.name ?? ''))
+  expect(oauthNames).toHaveLength(2)
+  expect(new Set(oauthNames).size).toBe(2)
+  const threadConfigs = protocolMessages.filter((message) => ['thread/start', 'thread/resume'].includes(message.method ?? '')).map((message) => message.params?.config?.mcp_servers as Record<string, { enabled?: boolean }> | undefined).filter(Boolean)
+  expect(threadConfigs.some((config) => config?.[oauthNames[0]!]?.enabled === true && config?.[oauthNames[1]!]?.enabled === false)).toBe(true)
+  expect(threadConfigs.some((config) => config?.[oauthNames[0]!]?.enabled === false && config?.[oauthNames[1]!]?.enabled === true)).toBe(true)
 })

@@ -1,6 +1,6 @@
 # SplittBot
 
-SplittBot is a working Mac application for a team of persistent Codex agents. Each agent has a name, role, avatar, working instructions, model, AI effort, approved local boundaries, and a persistent Codex thread.
+SplittBot is a working, standalone Mac application for a team of persistent Codex agents. Each agent has a name, role, avatar, working instructions, model, AI effort, approved local boundaries, connector-account identities, and a persistent Codex thread.
 
 This repository contains the working Phase 0–5 desktop app, research, and product/technical design:
 
@@ -13,10 +13,11 @@ This repository contains the working Phase 0–5 desktop app, research, and prod
 - [Phase 4 implementation handoff](docs/phase-4-handoff.md)
 - [Phase 5 roadmap](docs/phase-5-roadmap.md)
 - [Phase 5 real-Mac acceptance record](docs/phase-5-acceptance.md)
+- [Phase 6 standalone runtime and account authentication](docs/phase-6-standalone-accounts.md)
 
 ## Current implementation
 
-Phase 0 through Phase 4 are implemented as a working Electron macOS application. The app uses the Codex runtime installed with ChatGPT, signs in through Codex-managed ChatGPT authentication, discovers the models available to the account, creates persistent agent threads, and resumes them after an application or App Server restart.
+Phase 0 through Phase 6 are implemented as a working Electron macOS application. Packaged builds carry an architecture-specific Codex App Server runtime in `Contents/Resources/runtime`, use a SplittBot-owned Codex profile under the app data directory, sign in through Codex-managed ChatGPT authentication, discover the models available to the account, create persistent agent threads, and resume them after an application or App Server restart. ChatGPT or Codex does not need to be separately running after the runtime has been packaged.
 
 The desktop includes named agent profiles, image/emoji/initial avatars, per-agent model and reasoning-effort selection, `@AgentName`/`@all` collaboration, streamed conversations, local SQLite persistence, task runs and handoffs, artifacts, durable approval cards, per-agent workspace grants, an audit history, isolated typed IPC, and secret-redacted structured logs.
 
@@ -31,6 +32,8 @@ The first Phase 5 slice makes the composer attachment control functional for up 
 Phase 5 also adds durable group workspaces with an explicit owner, selected members, a unified handoff/contribution timeline, mentioned-agent-only coordination by default, and deliberate automatic-team opt-in. Approval cards show structured impact fields, can steer an active Codex turn with a question without approval, and allow edit-and-approve only for revalidated Shortcut text. User-configured connectors can be edited, reconnected, disconnected, and safely removed; active granted work blocks removal. Each agent now has explicit local memory notes, Codex memory mode, retention, export, note deletion, and persistent-thread deletion controls.
 
 Settings includes a durable real-Mac acceptance dashboard. It distinguishes live ChatGPT/runtime evidence from deterministic tests, reads the exact packaged bundle’s macOS permission state, performs a local iMessage status/search/draft check without calling send, records OAuth revoke only after it succeeds, and keeps recovery-code execution separate from a real observed sleep/wake cycle.
+
+Phase 6 adds account-aware connector authentication. A secure HTTP MCP source can have multiple labeled account identities, each mapped to a distinct internal MCP server name and OAuth credential slot. Agent profiles grant the exact account ID, so two agents can use the same endpoint as different users without reauthenticating on every run. SplittBot stores account labels, optional login identifiers, and grants in SQLite; OAuth tokens remain in the Codex-managed credential store.
 
 Tagged collaboration is enforced by the app rather than simulated in one prompt. Each receiving agent runs in its own persistent thread with its own selected model, AI effort, working directory, sandbox, grants, and approval flow. SplittBot records the handoff and gives the returned contribution to the primary agent for a final synthesis.
 
@@ -47,6 +50,10 @@ Build and locally sign the macOS app:
 npm run package:mac
 open release/mac-arm64/SplittBot.app
 ```
+
+`package:mac` prepares the local architecture runtime from `SPLITTBOT_CODEX_BUNDLE_SOURCE` or the installed ChatGPT runtime, validates `--version`, records a SHA-256 manifest, embeds it, and signs the complete bundle. The repository never commits the runtime binary. A distributable universal build requires both `SPLITTBOT_CODEX_BUNDLE_SOURCE_ARM64` and `SPLITTBOT_CODEX_BUNDLE_SOURCE_X64`; confirm redistribution terms for the supplied binaries before publishing them.
+
+The first standalone launch uses a new SplittBot-owned Codex profile. Sign in with ChatGPT once and reconnect or recreate any connectors needed in that isolated profile; SplittBot intentionally does not copy authentication files or unknown secret-bearing config from another Codex installation.
 
 Build a Developer ID-signed and notarized universal DMG/ZIP after configuring the documented GitHub secrets:
 
@@ -75,6 +82,7 @@ npm run test:codex-live
 - Inspect collaboration status in the conversation and durable handoff/audit records.
 - Review skills under Tools before granting them to an agent. An explicit `$skill-name` is rejected unless the skill is enabled, reviewed, and granted.
 - Grant only the MCP connectors and Apple Shortcuts that agent needs. Shortcut runs always stop in Approvals with the exact text input visible.
+- For two users on one connector, add the secure HTTP source once, create a labeled account identity for each user under **Tools**, complete each browser OAuth flow with the matching user, and grant the exact account identity in each agent profile.
 
 ## Routines and local tools
 
@@ -104,12 +112,13 @@ The first production slice should include:
 1. Named agents with roles, avatars, instructions, and per-agent memory.
 2. One-to-one chat, group workspaces, delegation, and visible handoffs.
 3. Background task runs with progress, cancel, persisted retry, and notifications. **Implemented in Phase 2.**
-4. MCP/OAuth connectors plus per-agent grants for user-configured services. **Implemented in Phase 2.**
+4. MCP/OAuth connectors plus per-agent grants for user-configured services. **Implemented in Phase 2; multiple account identities per source implemented in Phase 6.**
 5. Reviewed skills and awake-only scheduled routines. **Implemented in Phase 2.**
 6. A centralized approval inbox and immutable action audit trail.
 7. Per-agent connector, file, command, and application permissions.
 8. Visible approval prompts, pause/takeover/emergency stop, and one serialized lane for GUI automation. **Implemented in Phase 3.**
 9. Source control, CI, branded packaging, recovery, and notarization-ready releases. **Implemented in Phase 4; Apple credentials are required to publish.**
 10. Image attachments, group workspaces, richer approvals, connector lifecycle, and explicit memory/retention controls. **Implemented in Phase 5. Real-Mac permission, OAuth, and sleep/wake outcomes remain evidence-gated per machine.**
+11. Bundled architecture-specific Codex runtime, app-owned Codex profile, runtime manifest, and same-source/different-user connector accounts. **Implemented in Phase 6. Public universal artifacts still require both runtime architectures, redistribution clearance, and Apple release credentials.**
 
 Prefer MCP, provider APIs, Shortcuts, Apple Events, and command-line interfaces over screen clicking. Accessibility/screen-based control should be enabled only when no structured integration is suitable and remains separately gated per agent and per plan.

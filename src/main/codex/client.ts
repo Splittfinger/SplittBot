@@ -55,7 +55,7 @@ export class CodexAppServerClient extends EventEmitter {
     const args = [...this.launch.argsPrefix, 'app-server', '--listen', 'stdio://']
     this.child = spawn(this.launch.command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, ...(process.env.SPLITTBOT_CODEX_HOME ? { CODEX_HOME: process.env.SPLITTBOT_CODEX_HOME } : {}) }
+      env: { ...process.env, ...(this.launch.home ? { CODEX_HOME: this.launch.home } : {}) }
     })
     this.lines = createInterface({ input: this.child.stdout })
     this.lines.on('line', (line) => this.handleLine(line))
@@ -70,7 +70,7 @@ export class CodexAppServerClient extends EventEmitter {
       clientInfo: { name: 'splittbot', title: 'SplittBot', version: packageMetadata.version }
     })
     this.notify('initialized', {})
-    await this.logger.write('info', 'codex.started', { source: this.launch.source })
+    await this.logger.write('info', 'codex.started', { source: this.launch.source, bundled: Boolean(this.launch.bundled) })
   }
 
   async restart(): Promise<void> {

@@ -31,7 +31,11 @@ const api: DesktopApi = {
     remove: (name) => ipcRenderer.invoke('connectors:remove', name),
     setEnabled: (name, enabled) => ipcRenderer.invoke('connectors:setEnabled', name, enabled),
     login: (name) => ipcRenderer.invoke('connectors:login', name),
-    logout: (name) => ipcRenderer.invoke('connectors:logout', name)
+    logout: (name) => ipcRenderer.invoke('connectors:logout', name),
+    addAccount: (input) => ipcRenderer.invoke('connectors:addAccount', input),
+    loginAccount: (id) => ipcRenderer.invoke('connectors:loginAccount', id),
+    logoutAccount: (id) => ipcRenderer.invoke('connectors:logoutAccount', id),
+    removeAccount: (id) => ipcRenderer.invoke('connectors:removeAccount', id)
   },
   skills: {
     refresh: () => ipcRenderer.invoke('skills:refresh'),

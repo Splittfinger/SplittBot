@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { SqliteStore } from '../../src/main/db/store'
 
-const grants = { readableRoots: ['/tmp'], writableRoots: [], allowedCommands: [], allowedApps: [], allowedConnectors: [], allowedSkillPaths: [], allowedShortcuts: [], networkAccess: false }
+const grants = { readableRoots: ['/tmp'], writableRoots: [], allowedCommands: [], allowedApps: [], allowedConnectors: [], allowedConnectorAccounts: [], allowedSkillPaths: [], allowedShortcuts: [], networkAccess: false }
 
 describe('SqliteStore', () => {
   it('persists agents, messages, runs, artifacts, approvals, and audit events', async () => {
@@ -27,6 +27,8 @@ describe('SqliteStore', () => {
     const workspace = await store.createWorkspace({ name: 'Launch desk', objective: 'Coordinate the launch.', currentOwnerAgentId: agent.id, memberIds: [agent.id, atlas.id], autoCoordinate: false })
     await store.addWorkspaceEvent({ workspaceId: workspace.id, runId: run.id, agentId: agent.id, type: 'handoff', summary: 'Maya asked Atlas to synthesize', detail: { handoffId: handoff.id } })
     const memory = await store.createAgentMemory(agent.id, 'Use primary sources.')
+    const connectorAccount = await store.createConnectorAccount({ connectorName: 'demo_docs', label: 'Work', accountIdentifier: 'work@example.com' }, 'demo_docs_acct_123456789abc')
+    await store.updateAgent(agent.id, { name: agent.name, role: agent.role, instructions: agent.instructions, color: agent.color, model: agent.model, reasoningEffort: agent.reasoningEffort, avatar: agent.avatar, collaboratorIds: agent.collaboratorIds, cwd: agent.cwd, accessMode: agent.accessMode, grants: { ...agent.grants, allowedConnectorAccounts: [connectorAccount.id] } })
     await store.setAgentMemoryPolicy(agent.id, { mode: 'disabled', retentionDays: 90 })
     await store.recordAcceptanceCheck({ key: 'permissions', label: 'Packaged permissions', status: 'blocked', detail: 'Not granted.', evidence: null, checkedAt: new Date().toISOString() })
     const guiSession = await store.createGuiSession({ agentId: agent.id, targetApp: 'Preview', objective: 'Open a document safely.', steps: [{ type: 'activateApp' }, { type: 'wait', durationMs: 500 }], maxRetries: 1 }, 'b'.repeat(64))
@@ -53,11 +55,16 @@ describe('SqliteStore', () => {
     expect(store.listWorkspaces()[0]).toMatchObject({ name: 'Launch desk', memberIds: [agent.id, atlas.id], autoCoordinate: false })
     expect(store.listWorkspaceEvents()[0]).toMatchObject({ type: 'handoff', workspaceId: workspace.id })
     expect(store.getAgentMemory(memory.id)).toMatchObject({ content: 'Use primary sources.' })
+    expect(store.getConnectorAccount(connectorAccount.id)).toMatchObject({ connectorName: 'demo_docs', runtimeName: 'demo_docs_acct_123456789abc', label: 'Work', accountIdentifier: 'work@example.com' })
+    expect(store.getAgent(agent.id)?.grants.allowedConnectorAccounts).toEqual([connectorAccount.id])
     expect(store.listAcceptanceChecks()[0]).toMatchObject({ key: 'permissions', status: 'blocked' })
     expect(store.isGuiEmergencyStopped()).toBe(true)
     await store.deleteRoutine(routine.id)
     expect(store.listRoutines()).toHaveLength(0)
     expect(store.listRoutineAttempts()).toHaveLength(0)
+    await store.removeConnectorAccount(connectorAccount.id)
+    expect(store.listConnectorAccounts()).toHaveLength(0)
+    expect(store.getAgent(agent.id)?.grants.allowedConnectorAccounts).toEqual([])
     store.close()
   })
 })

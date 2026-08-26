@@ -1,10 +1,13 @@
-import { accessSync, constants, existsSync } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { accessSync, constants, existsSync, readFileSync } from 'node:fs'
+import { delimiter, dirname, join } from 'node:path'
 
 export interface CodexLaunch {
   command: string
   argsPrefix: string[]
   source: string
+  home?: string
+  bundled?: boolean
+  version?: string
 }
 
 function executable(path: string): boolean {
@@ -25,7 +28,8 @@ function findOnPath(command: string): string | null {
   return null
 }
 
-export function resolveCodexLaunch(resourcesPath?: string): CodexLaunch {
+export function resolveCodexLaunch(resourcesPath?: string, defaultHome?: string): CodexLaunch {
+  const home = process.env.SPLITTBOT_CODEX_HOME || defaultHome
   const explicitCommand = process.env.SPLITTBOT_CODEX_COMMAND
   if (explicitCommand) {
     let argsPrefix: string[] = []
@@ -36,16 +40,17 @@ export function resolveCodexLaunch(resourcesPath?: string): CodexLaunch {
       }
       argsPrefix = parsed
     }
-    return { command: explicitCommand, argsPrefix, source: 'environment override' }
+    return { command: explicitCommand, argsPrefix, source: 'environment override', home, bundled: false }
   }
 
   const explicitPath = process.env.SPLITTBOT_CODEX_PATH
   if (explicitPath) {
     if (!executable(explicitPath)) throw new Error(`Configured Codex executable is unavailable: ${explicitPath}`)
-    return { command: explicitPath, argsPrefix: [], source: 'configured path' }
+    return { command: explicitPath, argsPrefix: [], source: 'configured path', home, bundled: false }
   }
 
   const candidates = [
+    resourcesPath ? join(resourcesPath, 'runtime', `${process.platform}-${process.arch}`, 'codex') : null,
     resourcesPath ? join(resourcesPath, 'codex') : null,
     '/Applications/ChatGPT.app/Contents/Resources/codex',
     findOnPath('codex')
@@ -53,11 +58,24 @@ export function resolveCodexLaunch(resourcesPath?: string): CodexLaunch {
 
   const command = candidates.find((candidate) => existsSync(candidate) && executable(candidate))
   if (!command) {
-    throw new Error('Codex was not found. Install the ChatGPT desktop app or set SPLITTBOT_CODEX_PATH.')
+    throw new Error('SplittBot could not find its bundled Codex runtime. Reinstall SplittBot, or set SPLITTBOT_CODEX_PATH for development.')
+  }
+  const bundled = Boolean(resourcesPath && command.startsWith(join(resourcesPath, 'runtime')))
+  let version: string | undefined
+  if (bundled) {
+    try {
+      const manifest = JSON.parse(readFileSync(join(dirname(command), 'runtime-manifest.json'), 'utf8')) as { version?: unknown }
+      if (typeof manifest.version === 'string') version = manifest.version
+    } catch {
+      // Runtime validation during packaging is authoritative; a missing manifest only removes the display version.
+    }
   }
   return {
     command,
     argsPrefix: [],
-    source: command.includes('ChatGPT.app') ? 'ChatGPT desktop runtime' : 'system Codex runtime'
+    source: bundled ? 'bundled SplittBot runtime' : command.includes('ChatGPT.app') ? 'ChatGPT desktop runtime' : 'system Codex runtime',
+    home,
+    bundled,
+    version
   }
 }

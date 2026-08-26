@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { mkdir } from 'node:fs/promises'
 import { app, BrowserWindow, dialog, Notification, shell } from 'electron'
 import { resolveCodexLaunch } from './codex/runtime'
 import { CodexAppServerClient } from './codex/client'
@@ -24,7 +25,8 @@ async function createApplication(): Promise<void> {
   store = await SqliteStore.open(databasePath)
   await store.ensureSeedAgent(process.env.SPLITTBOT_DEFAULT_CWD || process.cwd())
 
-  const launch = resolveCodexLaunch(process.resourcesPath)
+  const launch = resolveCodexLaunch(process.resourcesPath, join(dataDirectory, 'codex-profile'))
+  if (launch.home) await mkdir(launch.home, { recursive: true, mode: 0o700 })
   const client = new CodexAppServerClient(launch, logger)
   const guiAdapter = process.env.SPLITTBOT_TEST_MODE === '1' ? new DeterministicGuiAdapter() : new MacGuiAutomationAdapter()
   const gui = new GuiAutomationBroker(join(dataDirectory, 'gui-evidence'), guiAdapter)

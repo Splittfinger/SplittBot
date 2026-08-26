@@ -1,6 +1,6 @@
 {
   "name": "splittbot",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "author": "SplittBot",
   "description": "A local macOS desktop for persistent ChatGPT-authenticated Codex agents.",
@@ -14,8 +14,10 @@
     "test:watch": "vitest",
     "test:codex-live": "tsx scripts/live-codex-smoke.ts",
     "test:e2e": "npm run build && playwright test",
-    "package:mac": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir -c.mac.identity=null && tsx scripts/sign-local.ts",
-    "dist:mac": "npm run build && electron-builder --mac dmg zip --universal -c.mac.notarize=true",
+    "bundle:runtime": "tsx scripts/prepare-codex-runtime.ts",
+    "bundle:runtime:universal": "tsx scripts/prepare-codex-runtime.ts --universal",
+    "package:mac": "npm run build && npm run bundle:runtime && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir -c.mac.identity=null && tsx scripts/sign-local.ts",
+    "dist:mac": "npm run build && npm run bundle:runtime:universal && electron-builder --mac dmg zip --universal -c.mac.notarize=true",
     "test:packaged": "playwright test --config playwright.packaged.config.ts",
     "verify": "npm run typecheck && npm run test && npm run test:e2e && npm run package:mac && npm run test:packaged"
   },
@@ -30,6 +32,12 @@
     "files": [
       "out/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/runtime",
+        "to": "runtime"
+      }
     ],
     "mac": {
       "category": "public.app-category.productivity",
