@@ -61,6 +61,7 @@ test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and 
   await window.getByRole('button', { name: 'Save connector' }).click()
   const extraConnector = window.locator('.integration-row').filter({ hasText: 'extra_docs' })
   await expect(extraConnector).toBeVisible()
+  await expect(extraConnector.getByRole('heading', { name: 'Extra Docs', exact: true })).toBeVisible()
   await extraConnector.getByRole('button', { name: 'Edit' }).click()
   await window.getByLabel('HTTPS endpoint').fill('https://example.net/mcp')
   await window.getByRole('button', { name: 'Save changes' }).click()
