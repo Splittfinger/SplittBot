@@ -30,6 +30,10 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
   let window = await application.firstWindow()
   await expect(window.getByText('Good to see you.')).toBeVisible()
   expect(await window.evaluate(() => typeof (globalThis as { process?: unknown }).process)).toBe('undefined')
+  expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getMinimumSize())).toEqual([900, 640])
+  const displaySession = await window.context().newCDPSession(window)
+  await displaySession.send('Emulation.setDeviceMetricsOverride', { width: 1420, height: 900, deviceScaleFactor: 1, mobile: false })
+  await window.waitForTimeout(100)
 
   const wideLayout = await window.evaluate(() => {
     const shell = document.querySelector('.app-shell') as HTMLElement
@@ -57,7 +61,7 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
   expect(wideLayout.panelMaterial).toBe('none')
   expect(wideLayout.fontFamily.toLowerCase()).not.toContain('georgia')
 
-  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(980, 760))
+  await displaySession.send('Emulation.setDeviceMetricsOverride', { width: 980, height: 760, deviceScaleFactor: 1, mobile: false })
   await window.waitForTimeout(150)
   const compactHomeLayout = await window.evaluate(() => {
     const rail = document.querySelector('.rail') as HTMLElement
@@ -76,7 +80,7 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
   await window.getByLabel('Agents').click()
   await expect(window.getByLabel('Message Atlas')).toBeVisible()
   expect(await window.locator('.team-pane').evaluate((pane) => getComputedStyle(pane).display)).toBe('flex')
-  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1420, 900))
+  await displaySession.send('Emulation.setDeviceMetricsOverride', { width: 1420, height: 900, deviceScaleFactor: 1, mobile: false })
   await window.waitForTimeout(150)
 
   const composer = window.getByLabel('Message Atlas')
