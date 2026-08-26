@@ -28,9 +28,12 @@ async function sourceFor(targetArch: 'arm64' | 'x64'): Promise<string> {
 
 async function prepare(targetArch: 'arm64' | 'x64'): Promise<Record<string, unknown>> {
   const source = await sourceFor(targetArch)
-  const { stdout: sourceArchitectures } = await execFileAsync('/usr/bin/lipo', ['-archs', source], { timeout: 15_000 })
-  if (!sourceArchitectures.trim().split(/\s+/).includes(targetArch)) {
-    throw new Error(`The supplied ${targetArch} runtime does not contain that architecture: ${source}`)
+  const allowTestFixture = process.env.SPLITTBOT_ALLOW_NON_MACHO_RUNTIME === '1'
+  if (!allowTestFixture) {
+    const { stdout: sourceArchitectures } = await execFileAsync('/usr/bin/lipo', ['-archs', source], { timeout: 15_000 })
+    if (!sourceArchitectures.trim().split(/\s+/).includes(targetArch)) {
+      throw new Error(`The supplied ${targetArch} runtime does not contain that architecture: ${source}`)
+    }
   }
   const directory = join(outputRoot, `darwin-${targetArch}`)
   const destination = join(directory, 'codex')
@@ -46,7 +49,8 @@ async function prepare(targetArch: 'arm64' | 'x64'): Promise<Record<string, unkn
     version: stdout.trim(),
     sha256: createHash('sha256').update(bytes).digest('hex'),
     bytes: bytes.byteLength,
-    preparedAt: new Date().toISOString()
+    preparedAt: new Date().toISOString(),
+    testFixture: allowTestFixture
   }
   await writeFile(join(directory, 'runtime-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o644 })
   return manifest

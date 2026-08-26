@@ -21,7 +21,9 @@ test('packaged and locally signed macOS app launches with isolated renderer', as
       SPLITTBOT_TEST_MODE: '1',
       SPLITTBOT_DEFAULT_CWD: process.cwd(),
       SPLITTBOT_CODEX_COMMAND: process.execPath,
-      SPLITTBOT_CODEX_ARGS_JSON: JSON.stringify([resolve('tests/fixtures/fake-app-server.mjs')])
+      SPLITTBOT_CODEX_ARGS_JSON: JSON.stringify([resolve('tests/fixtures/fake-app-server.mjs')]),
+      SPLITTBOT_FAKE_NODE: process.execPath,
+      SPLITTBOT_FAKE_APP_SERVER_PATH: resolve('tests/fixtures/fake-app-server.mjs')
     }
   })
   const window = await application.firstWindow()
@@ -53,7 +55,9 @@ test('packaged app starts its bundled runtime with no external Codex command', a
       SPLITTBOT_CODEX_COMMAND: '',
       SPLITTBOT_CODEX_ARGS_JSON: '',
       SPLITTBOT_CODEX_PATH: '',
-      SPLITTBOT_CODEX_HOME: ''
+      SPLITTBOT_CODEX_HOME: '',
+      SPLITTBOT_FAKE_NODE: process.execPath,
+      SPLITTBOT_FAKE_APP_SERVER_PATH: resolve('tests/fixtures/fake-app-server.mjs')
     }
   })
   const window = await application.firstWindow()

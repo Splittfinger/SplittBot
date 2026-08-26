@@ -28,6 +28,7 @@ Existing shared connector grants remain supported for migration compatibility. N
 - Unit coverage validates bundled-runtime precedence, app-owned profile selection, account persistence across restart, and grant cleanup on removal.
 - Desktop end-to-end coverage creates two OAuth identities on one source, grants one to Atlas and the other to Maya, and inspects the actual `thread/start` and `thread/resume` payloads to prove the identities are oppositely enabled.
 - Packaged acceptance verifies the exact signed app contains a runtime and manifest, then launches without a Codex command override or useful Codex path and confirms Settings reports `Bundled with SplittBot`.
+- Clean CI uses an explicit non-production runtime fixture so it can exercise the same package and no-external-runtime path without downloading or committing a Codex binary. Production prep rejects non-Mach-O or wrong-architecture inputs unless that test-only override is deliberately set.
 
 ## Evidence boundary
 
