@@ -157,23 +157,35 @@ export function App(): JSX.Element {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-section={section}>
       <aside className="rail">
         <div className="drag-region" />
-        <div className="logo" title="SplittBot"><Sparkles size={19} strokeWidth={2.4} /></div>
+        <div className="logo" title="SplittBot">
+          <span className="logo-symbol"><Sparkles size={18} strokeWidth={2.4} /></span>
+          <span className="logo-copy"><strong>SplittBot</strong><small>Agent workspace</small></span>
+        </div>
         <nav className="rail-nav" aria-label="Primary navigation">
-          <RailButton active={section === 'home'} label="Home" icon={<Gauge />} onClick={() => setSection('home')} />
-          <RailButton active={section === 'agents'} label="Agents" icon={<Bot />} onClick={() => setSection('agents')} />
-          <RailButton active={section === 'workspaces'} label="Workspaces" icon={<Users />} onClick={() => setSection('workspaces')} />
-          <RailButton active={section === 'runs'} label="Runs" icon={<Play />} onClick={() => setSection('runs')} />
-          <RailButton active={section === 'routines'} label="Routines" icon={<CalendarClock />} onClick={() => setSection('routines')} />
-          <RailButton active={section === 'integrations'} label="Tools" icon={<Plug />} onClick={() => setSection('integrations')} />
-          <RailButton active={section === 'computer'} label="Computer" icon={<Monitor />} onClick={() => setSection('computer')} />
-          <RailButton active={section === 'approvals'} label="Approvals" icon={<Inbox />} count={pendingApprovals.length} onClick={() => setSection('approvals')} />
-          <RailButton active={section === 'notifications'} label="Notifications" icon={<Bell />} count={unreadNotifications.length} onClick={() => setSection('notifications')} />
-          <RailButton active={section === 'artifacts'} label="Artifacts" icon={<Boxes />} onClick={() => setSection('artifacts')} />
-          <RailButton active={section === 'memory'} label="Memory" icon={<FileText />} onClick={() => setSection('memory')} />
-          <RailButton active={section === 'audit'} label="Audit" icon={<History />} onClick={() => setSection('audit')} />
+          <div className="rail-group">
+            <span className="rail-section-label">Workspace</span>
+            <RailButton active={section === 'home'} label="Home" icon={<Gauge />} onClick={() => setSection('home')} />
+            <RailButton active={section === 'agents'} label="Agents" icon={<Bot />} onClick={() => setSection('agents')} />
+            <RailButton active={section === 'workspaces'} label="Workspaces" icon={<Users />} onClick={() => setSection('workspaces')} />
+            <RailButton active={section === 'runs'} label="Runs" icon={<Play />} onClick={() => setSection('runs')} />
+          </div>
+          <div className="rail-group">
+            <span className="rail-section-label">Automate</span>
+            <RailButton active={section === 'routines'} label="Routines" icon={<CalendarClock />} onClick={() => setSection('routines')} />
+            <RailButton active={section === 'integrations'} label="Tools" icon={<Plug />} onClick={() => setSection('integrations')} />
+            <RailButton active={section === 'computer'} label="Computer" icon={<Monitor />} onClick={() => setSection('computer')} />
+            <RailButton active={section === 'approvals'} label="Approvals" icon={<Inbox />} count={pendingApprovals.length} onClick={() => setSection('approvals')} />
+          </div>
+          <div className="rail-group">
+            <span className="rail-section-label">Activity</span>
+            <RailButton active={section === 'notifications'} label="Notifications" icon={<Bell />} count={unreadNotifications.length} onClick={() => setSection('notifications')} />
+            <RailButton active={section === 'artifacts'} label="Artifacts" icon={<Boxes />} onClick={() => setSection('artifacts')} />
+            <RailButton active={section === 'memory'} label="Memory" icon={<FileText />} onClick={() => setSection('memory')} />
+            <RailButton active={section === 'audit'} label="Audit" icon={<History />} onClick={() => setSection('audit')} />
+          </div>
         </nav>
         <div className="rail-spacer" />
         <RailButton active={section === 'settings'} label="Settings" icon={<Settings />} onClick={() => setSection('settings')} />
@@ -272,11 +284,11 @@ export function App(): JSX.Element {
 }
 
 function RailButton({ active, label, icon, count, onClick }: { active: boolean; label: string; icon: JSX.Element; count?: number; onClick: () => void }): JSX.Element {
-  return <button className={`rail-button ${active ? 'active' : ''}`} aria-label={label} title={label} onClick={onClick}>{icon}{count ? <span className="rail-count">{count}</span> : null}</button>
+  return <button className={`rail-button ${active ? 'active' : ''}`} aria-label={label} title={label} onClick={onClick}>{icon}<span className="rail-label">{label}</span>{count ? <span className="rail-count">{count}</span> : null}</button>
 }
 
 function AccountDot({ state }: { state: AppSnapshot['account']['state'] }): JSX.Element {
-  return <div className={`account-dot ${state}`} title={`Codex: ${state}`}><Bot size={16} /></div>
+  return <div className={`account-dot ${state}`} title={`Codex: ${state}`}><Bot size={16} /><span className="account-label">ChatGPT</span></div>
 }
 
 function Avatar({ agent, size = 'normal' }: { agent: Pick<Agent, 'name' | 'color' | 'avatar'>; size?: 'normal' | 'large' }): JSX.Element {

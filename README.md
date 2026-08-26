@@ -14,6 +14,7 @@ This repository contains the working Phase 0–6 desktop app, research, and prod
 - [Phase 5 roadmap](docs/phase-5-roadmap.md)
 - [Phase 5 real-Mac acceptance record](docs/phase-5-acceptance.md)
 - [Phase 6 standalone runtime and account authentication](docs/phase-6-standalone-accounts.md)
+- [Apple 27 interface redesign](docs/apple-27-ui.md)
 
 ## Current implementation
 
@@ -34,6 +35,8 @@ Phase 5 also adds durable group workspaces with an explicit owner, selected memb
 Settings includes a durable real-Mac acceptance dashboard. It distinguishes live ChatGPT/runtime evidence from deterministic tests, reads the exact packaged bundle’s macOS permission state, performs a local iMessage status/search/draft check without calling send, records OAuth revoke only after it succeeds, and keeps recovery-code execution separate from a real observed sleep/wake cycle.
 
 Phase 6 adds account-aware connector authentication. A secure HTTP MCP source can have multiple labeled account identities, each mapped to a distinct internal MCP server name and OAuth credential slot. Agent profiles grant the exact account ID, so two agents can use the same endpoint as different users without reauthenticating on every run. SplittBot stores account labels, optional login identifiers, and grants in SQLite; OAuth tokens remain in the Codex-managed credential store.
+
+Version 0.7 redesigns the product shell around Apple's macOS 27 interface guidance. It adds a labeled, grouped primary sidebar on wide windows, an adaptive icon rail and conditional agent roster at compact widths, system typography, restrained Liquid Glass-style navigation materials, standard reading surfaces, dark appearance, and accessibility fallbacks for reduced motion, reduced transparency, and increased contrast. Existing Phase 0–6 workflows and security boundaries are unchanged.
 
 Tagged collaboration is enforced by the app rather than simulated in one prompt. Each receiving agent runs in its own persistent thread with its own selected model, AI effort, working directory, sandbox, grants, and approval flow. SplittBot records the handoff and gives the returned contribution to the primary agent for a final synthesis.
 

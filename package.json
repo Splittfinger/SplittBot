@@ -1,6 +1,6 @@
 {
   "name": "splittbot",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "author": "SplittBot",
   "description": "A local macOS desktop for persistent ChatGPT-authenticated Codex agents.",
@@ -55,7 +55,7 @@
     },
     "dmg": {
       "title": "SplittBot ${version}",
-      "backgroundColor": "#f3f0ea",
+      "backgroundColor": "#f2f2f7",
       "iconSize": 96,
       "contents": [
         {
