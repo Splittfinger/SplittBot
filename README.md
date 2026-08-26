@@ -2,7 +2,7 @@
 
 SplittBot is a working, standalone Mac application for a team of persistent Codex agents. Each agent has a name, role, avatar, working instructions, model, AI effort, approved local boundaries, connector-account identities, and a persistent Codex thread.
 
-This repository contains the working Phase 0–5 desktop app, research, and product/technical design:
+This repository contains the working Phase 0–6 desktop app, research, and product/technical design:
 
 - [Grok Bot research brief](docs/grok-bot-research.md)
 - [SplittBot product and UX design](docs/splittbot-design.md)
