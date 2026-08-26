@@ -1334,20 +1334,23 @@ export class CodexService extends EventEmitter {
       summary: 'concise'
     }, 60_000)
     const turnId = response.turn.id
-    await this.store.updateRun(runId, { turnId })
+    const completionPromise = new Promise<TurnCompletion>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Codex turn timed out after ten minutes.')), 600_000)
+      this.activeRuns.set(turnId, { runId, agentId: agent.id, threadId, turnId, streamedText: '', finalText: '', resolve, reject, timer })
+    })
     const activeTurn = { threadId, turnId }
-    this.runToTurn.set(runId, activeTurn)
-    this.runToTurn.set(controllerRunId, activeTurn)
     try {
-      const completion = await new Promise<TurnCompletion>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('Codex turn timed out after ten minutes.')), 600_000)
-        this.activeRuns.set(turnId, { runId, agentId: agent.id, threadId, turnId, streamedText: '', finalText: '', resolve, reject, timer })
-      })
+      await this.store.updateRun(runId, { turnId })
+      this.runToTurn.set(runId, activeTurn)
+      this.runToTurn.set(controllerRunId, activeTurn)
+      const completion = await completionPromise
       const active = this.activeRuns.get(turnId)
       const output = active?.finalText || active?.streamedText || (completion.status === 'interrupted' ? 'Run interrupted.' : '')
       const status: RunStatus = completion.status === 'completed' ? 'completed' : completion.status === 'interrupted' ? 'cancelled' : 'failed'
       return { status, output, error: completion.error, threadId, turnId }
     } finally {
+      const active = this.activeRuns.get(turnId)
+      if (active) clearTimeout(active.timer)
       this.activeRuns.delete(turnId)
       for (const key of new Set([runId, controllerRunId])) {
         if (this.runToTurn.get(key)?.turnId === turnId) this.runToTurn.delete(key)
@@ -1528,7 +1531,11 @@ export class CodexService extends EventEmitter {
     }
 
     const turnId = String(params.turnId ?? '')
-    const active = this.activeRuns.get(turnId)
+    let active = this.activeRuns.get(turnId)
+    for (let attempt = 0; !active && turnId && attempt < 50; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5))
+      active = this.activeRuns.get(turnId)
+    }
     const isCommand = method.includes('commandExecution')
     const command = Array.isArray(params.command) ? params.command.join(' ') : String(params.command ?? '')
     const reason = String(params.reason ?? '')
