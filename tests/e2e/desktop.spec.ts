@@ -41,6 +41,7 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
     const teamPane = document.querySelector('.team-pane') as HTMLElement
     const railLabel = document.querySelector('.rail-label') as HTMLElement
     const panel = document.querySelector('.panel') as HTMLElement
+    const mainPane = document.querySelector('.main-pane') as HTMLElement
     const bodyStyle = getComputedStyle(document.body)
     const railStyle = getComputedStyle(rail)
     return {
@@ -48,7 +49,8 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
       railWidth: Math.round(rail.getBoundingClientRect().width),
       teamPaneVisible: getComputedStyle(teamPane).display !== 'none',
       railLabelVisible: getComputedStyle(railLabel).display !== 'none',
-      railMaterial: railStyle.backdropFilter || railStyle.getPropertyValue('-webkit-backdrop-filter'),
+      railBackground: railStyle.backgroundColor,
+      mainBackground: getComputedStyle(mainPane).backgroundColor,
       panelMaterial: panel ? getComputedStyle(panel).backdropFilter || getComputedStyle(panel).getPropertyValue('-webkit-backdrop-filter') : 'none',
       fontFamily: bodyStyle.fontFamily
     }
@@ -57,7 +59,7 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
   expect(wideLayout.railWidth).toBeGreaterThan(150)
   expect(wideLayout.teamPaneVisible).toBe(true)
   expect(wideLayout.railLabelVisible).toBe(true)
-  expect(wideLayout.railMaterial).not.toBe('none')
+  expect(wideLayout.railBackground).not.toBe(wideLayout.mainBackground)
   expect(wideLayout.panelMaterial).toBe('none')
   expect(wideLayout.fontFamily.toLowerCase()).not.toContain('georgia')
 
