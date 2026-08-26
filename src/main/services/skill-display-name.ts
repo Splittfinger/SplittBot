@@ -65,10 +65,10 @@ export function friendlySkillName(technicalName: string, description = ''): stri
 
   if (leafName.toLocaleLowerCase() === 'index') {
     const namespace = technicalName.includes(':') ? technicalName.slice(0, technicalName.lastIndexOf(':')) : ''
-    return namespace ? `${titleFromIdentifier(namespace)} Tools` : descriptionTitle(description) || 'Skill Catalog'
+    return namespace ? `${friendlyIdentifierTitle(namespace)} Tools` : descriptionTitle(description) || 'Skill Catalog'
   }
 
-  const title = titleFromIdentifier(leafName)
+  const title = friendlyIdentifierTitle(leafName)
   return title || descriptionTitle(description) || 'Untitled Skill'
 }
 
@@ -83,7 +83,7 @@ async function readMetadataDisplayName(skillPath: string): Promise<string | null
   }
 }
 
-function titleFromIdentifier(value: string): string {
+export function friendlyIdentifierTitle(value: string): string {
   const words = value
     .replace(/([a-z\d])([A-Z])/g, '$1 $2')
     .replace(/[._/]+/g, ' ')

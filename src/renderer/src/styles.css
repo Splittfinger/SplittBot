@@ -331,7 +331,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .integration-row { display: grid; grid-template-columns: 42px minmax(220px, 1fr) auto auto; align-items: center; gap: 12px; padding: 14px; border: 1px solid #e2ddd4; border-radius: 15px; background: #fff; }
 .integration-row p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
 .integration-row small { display: block; margin-top: 5px; color: #999187; font-size: 8px; }
-.skill-technical-name { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; color: #766f66; overflow-wrap: anywhere; }
+.integration-technical-name { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; color: #766f66; overflow-wrap: anywhere; }
 .integration-icon { width: 39px; height: 39px; border-radius: 12px; background: #eee9fb; color: #684cc4; display: grid; place-items: center; }
 .integration-icon.paused, .integration-icon.unreviewed { background: #efede8; color: #777067; }
 .integration-icon.blocked { background: #fbe6e1; color: #a14d40; }

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 test('packaged and locally signed macOS app launches with isolated renderer', async () => {
-  const appBundle = readdirSync(resolve('release'), { withFileTypes: true })
+  const appBundle = process.env.SPLITTBOT_PACKAGED_APP_PATH || readdirSync(resolve('release'), { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && entry.name.startsWith('mac'))
     .map((entry) => resolve('release', entry.name, 'SplittBot.app'))
     .find(existsSync)
