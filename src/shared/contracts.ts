@@ -9,6 +9,7 @@ export interface AgentGrants {
   allowedCommands: string[]
   allowedApps: string[]
   allowedConnectors: string[]
+  allowedConnectorAccounts: string[]
   allowedSkillPaths: string[]
   allowedShortcuts: string[]
   networkAccess: boolean
@@ -162,6 +163,8 @@ export interface AccountStatus {
   requiresOpenaiAuth: boolean
   runtimeSource: string | null
   runtimeVersion: string | null
+  runtimeBundled: boolean
+  runtimeHome: string | null
   error: string | null
 }
 
@@ -186,6 +189,26 @@ export interface Connector {
 export type ConnectorInput =
   | { name: string; transport: 'stdio'; command: string; args: string[] }
   | { name: string; transport: 'streamableHttp'; url: string }
+
+export interface ConnectorAccount {
+  id: string
+  connectorName: string
+  connectorDisplayName: string
+  runtimeName: string
+  label: string
+  accountIdentifier: string | null
+  authStatus: ConnectorAuthStatus
+  enabled: boolean
+  error: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ConnectorAccountInput {
+  connectorName: string
+  label: string
+  accountIdentifier?: string | null
+}
 
 export interface Workspace {
   id: string
@@ -398,6 +421,7 @@ export interface AppSnapshot {
   artifacts: Artifact[]
   audit: AuditEvent[]
   connectors: Connector[]
+  connectorAccounts: ConnectorAccount[]
   skills: SkillCatalogItem[]
   shortcuts: LocalShortcut[]
   routines: Routine[]
@@ -445,6 +469,10 @@ export interface DesktopApi {
     setEnabled: (name: string, enabled: boolean) => Promise<void>
     login: (name: string) => Promise<{ authorizationUrl: string }>
     logout: (name: string) => Promise<void>
+    addAccount: (input: ConnectorAccountInput) => Promise<{ account: ConnectorAccount; authorizationUrl: string }>
+    loginAccount: (id: string) => Promise<{ authorizationUrl: string }>
+    logoutAccount: (id: string) => Promise<void>
+    removeAccount: (id: string) => Promise<void>
   }
   workspaces: {
     create: (input: WorkspaceInput) => Promise<Workspace>

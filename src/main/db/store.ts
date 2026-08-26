@@ -14,6 +14,8 @@ import type {
   ApprovalStatus,
   Artifact,
   AuditEvent,
+  ConnectorAccount,
+  ConnectorAccountInput,
   GuiEvidence,
   GuiEvidenceKind,
   GuiSession,
@@ -46,6 +48,7 @@ const DEFAULT_GRANTS: AgentGrants = {
   allowedCommands: [],
   allowedApps: [],
   allowedConnectors: [],
+  allowedConnectorAccounts: [],
   allowedSkillPaths: [],
   allowedShortcuts: [],
   networkAccess: false
@@ -282,6 +285,15 @@ export class SqliteStore {
         evidence TEXT,
         checked_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS connector_accounts (
+        id TEXT PRIMARY KEY,
+        connector_name TEXT NOT NULL,
+        runtime_name TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL,
+        account_identifier TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent_id, started_at);
       CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at);
@@ -294,6 +306,7 @@ export class SqliteStore {
       CREATE INDEX IF NOT EXISTS idx_gui_evidence_session ON gui_evidence(session_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_workspace_events_workspace ON workspace_events(workspace_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_agent_memories_agent ON agent_memories(agent_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_connector_accounts_source ON connector_accounts(connector_name, created_at);
     `)
     this.ensureColumn('agents', 'reasoning_effort', 'TEXT')
     this.ensureColumn('agents', 'avatar_type', "TEXT NOT NULL DEFAULT 'initials'")
@@ -429,6 +442,42 @@ export class SqliteStore {
         const grants = { ...agent.grants, allowedConnectors: agent.grants.allowedConnectors.filter((entry) => entry !== name) }
         this.db.run(`UPDATE agents SET grants_json = ?, updated_at = ? WHERE id = ?`, [JSON.stringify(grants), new Date().toISOString(), agent.id])
       }
+      this.db.run('COMMIT')
+      await this.persist()
+    } catch (error) {
+      this.db.run('ROLLBACK')
+      throw error
+    }
+  }
+
+  listConnectorAccounts(): ConnectorAccount[] {
+    return this.all(`SELECT * FROM connector_accounts ORDER BY connector_name ASC, label ASC, created_at ASC`).map(mapConnectorAccount)
+  }
+
+  getConnectorAccount(id: string): ConnectorAccount | null {
+    const row = this.one(`SELECT * FROM connector_accounts WHERE id = ?`, [id])
+    return row ? mapConnectorAccount(row) : null
+  }
+
+  async createConnectorAccount(input: ConnectorAccountInput, runtimeName: string): Promise<ConnectorAccount> {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    await this.mutate(
+      `INSERT INTO connector_accounts (id, connector_name, runtime_name, label, account_identifier, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.connectorName, runtimeName, input.label, input.accountIdentifier ?? null, now, now]
+    )
+    return this.getConnectorAccount(id)!
+  }
+
+  async removeConnectorAccount(id: string): Promise<void> {
+    this.db.run('BEGIN')
+    try {
+      for (const agent of this.listAgents(true)) {
+        if (!agent.grants.allowedConnectorAccounts.includes(id)) continue
+        const grants = { ...agent.grants, allowedConnectorAccounts: agent.grants.allowedConnectorAccounts.filter((entry) => entry !== id) }
+        this.db.run(`UPDATE agents SET grants_json = ?, updated_at = ? WHERE id = ?`, [JSON.stringify(grants), new Date().toISOString(), agent.id])
+      }
+      this.db.run(`DELETE FROM connector_accounts WHERE id = ?`, [id])
       this.db.run('COMMIT')
       await this.persist()
     } catch (error) {
@@ -887,6 +936,14 @@ function mapAgent(row: SqlRow): Agent {
     memoryMode: (row.memory_mode || 'enabled') as Agent['memoryMode'],
     memoryRetentionDays: row.memory_retention_days === null || row.memory_retention_days === undefined ? null : Number(row.memory_retention_days),
     grants: { ...DEFAULT_GRANTS, ...storedGrants }, createdAt: String(row.created_at), updatedAt: String(row.updated_at)
+  }
+}
+
+function mapConnectorAccount(row: SqlRow): ConnectorAccount {
+  return {
+    id: String(row.id), connectorName: String(row.connector_name), connectorDisplayName: String(row.connector_name),
+    runtimeName: String(row.runtime_name), label: String(row.label), accountIdentifier: row.account_identifier ? String(row.account_identifier) : null,
+    authStatus: 'unknown', enabled: true, error: null, createdAt: String(row.created_at), updatedAt: String(row.updated_at)
   }
 }
 

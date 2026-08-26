@@ -14,6 +14,7 @@ const grantsSchema = z.object({
   allowedCommands: z.array(z.string()),
   allowedApps: z.array(z.string()),
   allowedConnectors: z.array(z.string().min(1).max(120)),
+  allowedConnectorAccounts: z.array(z.string().uuid()),
   allowedSkillPaths: z.array(z.string().startsWith('/')),
   allowedShortcuts: z.array(z.string().min(1).max(180)),
   networkAccess: z.boolean()
@@ -45,6 +46,11 @@ const connectorInputSchema = z.discriminatedUnion('transport', [
   z.object({ name: connectorNameSchema, transport: z.literal('stdio'), command: z.string().trim().startsWith('/').max(500), args: z.array(z.string().max(2_000)).max(50) }),
   z.object({ name: connectorNameSchema, transport: z.literal('streamableHttp'), url: z.string().url().refine((value) => new URL(value).protocol === 'https:', 'Connector URLs must use HTTPS.') })
 ])
+const connectorAccountInputSchema = z.object({
+  connectorName: connectorNameSchema,
+  label: z.string().trim().min(1).max(80),
+  accountIdentifier: z.string().trim().max(254).nullable().optional()
+})
 const scheduleSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('interval'), intervalMinutes: z.number().int().min(1).max(43_200) }),
   z.object({ kind: z.literal('daily'), timeOfDay: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), daysOfWeek: z.array(z.number().int().min(0).max(6)).max(7) })
@@ -149,6 +155,10 @@ export function registerIpc(service: CodexService, system: IpcSystemActions): vo
   ipcMain.handle('connectors:setEnabled', (_event, name, enabled) => service.setConnectorEnabled(connectorNameSchema.parse(name), z.boolean().parse(enabled)))
   ipcMain.handle('connectors:login', (_event, name) => service.loginConnector(connectorNameSchema.parse(name)))
   ipcMain.handle('connectors:logout', (_event, name) => service.logoutConnector(connectorNameSchema.parse(name)))
+  ipcMain.handle('connectors:addAccount', (_event, input) => service.addConnectorAccount(connectorAccountInputSchema.parse(input)))
+  ipcMain.handle('connectors:loginAccount', (_event, id) => service.loginConnectorAccount(idSchema.parse(id)))
+  ipcMain.handle('connectors:logoutAccount', (_event, id) => service.logoutConnectorAccount(idSchema.parse(id)))
+  ipcMain.handle('connectors:removeAccount', (_event, id) => service.removeConnectorAccount(idSchema.parse(id)))
   ipcMain.handle('skills:refresh', () => service.refreshIntegrations())
   ipcMain.handle('skills:review', (_event, path, status, notes) => service.reviewSkill(z.string().startsWith('/').parse(path), z.enum(['unreviewed', 'reviewed', 'blocked']).parse(status), z.string().trim().max(2_000).nullable().optional().parse(notes) ?? null))
   ipcMain.handle('skills:setEnabled', (_event, path, enabled) => service.setSkillEnabled(z.string().startsWith('/').parse(path), z.boolean().parse(enabled)))
@@ -265,6 +275,7 @@ export function registerIpc(service: CodexService, system: IpcSystemActions): vo
   ipcMain.handle('app:openExternal', async (_event, value) => {
     const url = new URL(z.string().parse(value))
     if (url.protocol !== 'https:') throw new Error('Only HTTPS links may be opened.')
+    if (process.env.SPLITTBOT_TEST_MODE === '1') return
     await shell.openExternal(url.toString())
   })
   ipcMain.handle('app:revealPath', (_event, value) => {

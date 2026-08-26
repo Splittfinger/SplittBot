@@ -5,6 +5,7 @@ let nextThread = 1
 let nextTurn = 1
 let pendingApproval = null
 const connectorConfig = { demo_docs: { url: 'https://example.com/mcp', enabled: true } }
+const authenticatedConnectors = new Set()
 
 function log(message) {
   if (process.env.SPLITTBOT_FAKE_LOG) appendFileSync(process.env.SPLITTBOT_FAKE_LOG, `${JSON.stringify(message)}\n`)
@@ -43,7 +44,7 @@ lines.on('line', (line) => {
   if (method === 'account/login/start') return send({ id, result: { type: 'chatgpt', loginId: 'fake-login', authUrl: 'https://auth.openai.com/fake' } })
   if (method === 'account/logout') return send({ id, result: {} })
   if (method === 'model/list') return send({ id, result: { data: [{ id: 'fake-codex-model', model: 'fake-codex-model', isDefault: true, displayName: 'Fake Codex', defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'medium' }, { reasoningEffort: 'high' }] }], nextCursor: null } })
-  if (method === 'mcpServerStatus/list') return send({ id, result: { data: [{ name: 'demo_docs', pluginId: null, serverInfo: { name: 'Demo Docs', version: '1.0' }, tools: { search: { name: 'search', description: 'Search approved docs' } }, resources: [], resourceTemplates: [], authStatus: 'notLoggedIn' }], nextCursor: null } })
+  if (method === 'mcpServerStatus/list') return send({ id, result: { data: Object.keys(connectorConfig).map((name) => ({ name, pluginId: null, serverInfo: { name: name.startsWith('demo_docs_acct_') ? 'Demo Docs Account' : name === 'demo_docs' ? 'Demo Docs' : name, version: '1.0' }, tools: { search: { name: 'search', description: 'Search approved docs' } }, resources: [], resourceTemplates: [], authStatus: authenticatedConnectors.has(name) ? 'oAuth' : 'notLoggedIn' })), nextCursor: null } })
   if (method === 'config/read') return send({ id, result: { config: { mcp_servers: connectorConfig }, origins: {}, layers: null } })
   if (method === 'config/value/write') {
     const match = String(params.keyPath || '').match(/^mcp_servers\.([A-Za-z0-9_-]+)(?:\.enabled)?$/)
@@ -56,7 +57,14 @@ lines.on('line', (line) => {
     return send({ id, result: { status: 'ok', version: 'fake-version' } })
   }
   if (method === 'config/mcpServer/reload') return send({ id, result: {} })
-  if (method === 'mcpServer/oauth/login') return send({ id, result: { authorizationUrl: 'https://example.com/oauth' } })
+  if (method === 'mcpServer/oauth/login') {
+    authenticatedConnectors.add(String(params.name))
+    return send({ id, result: { authorizationUrl: `https://example.com/oauth?server=${encodeURIComponent(String(params.name))}` } })
+  }
+  if (method === 'mcpServer/oauth/logout') {
+    authenticatedConnectors.delete(String(params.name))
+    return send({ id, result: {} })
+  }
   if (method === 'skills/list') return send({ id, result: { data: (params.cwds || [process.cwd()]).map((cwd) => ({ cwd, skills: [{ name: 'fake-brief', description: 'Prepare a deterministic brief.', path: '/tmp/fake-brief/SKILL.md', scope: 'user', enabled: true, dependencies: { tools: [] } }], errors: [] })) } })
   if (method === 'skills/config/write') return send({ id, result: {} })
   if (method === 'thread/start') {

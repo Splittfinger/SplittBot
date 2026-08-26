@@ -17,6 +17,8 @@ import type {
   AppSnapshot,
   CodexModel,
   Connector,
+  ConnectorAccount,
+  ConnectorAccountInput,
   ConnectorInput,
   GuiPermissions,
   GuiSession,
@@ -107,6 +109,7 @@ interface SkillListResult {
 
 interface IntegrationCatalog {
   connectors: Connector[]
+  connectorAccounts: ConnectorAccount[]
   skills: SkillCatalogItem[]
   shortcuts: Array<{ name: string; grantedAgentCount: number }>
   error: string | null
@@ -208,6 +211,7 @@ export class CodexService extends EventEmitter {
       artifacts: this.store.listArtifacts(),
       audit: this.store.listAudit(),
       connectors: catalog.connectors,
+      connectorAccounts: catalog.connectorAccounts,
       skills: catalog.skills,
       shortcuts: catalog.shortcuts,
       routines: this.store.listRoutines(),
@@ -237,7 +241,9 @@ export class CodexService extends EventEmitter {
         planType: result.account?.planType ?? null,
         requiresOpenaiAuth: result.requiresOpenaiAuth,
         runtimeSource: this.client.launch.source,
-        runtimeVersion: null,
+        runtimeVersion: this.client.launch.version ?? null,
+        runtimeBundled: Boolean(this.client.launch.bundled),
+        runtimeHome: this.client.launch.home ?? null,
         error: null
       }
       const models = result.account ? await this.listModels() : []
@@ -246,7 +252,9 @@ export class CodexService extends EventEmitter {
       return {
         account: {
           state: 'unavailable', authMode: null, email: null, planType: null, requiresOpenaiAuth: true,
-          runtimeSource: this.client.launch.source, runtimeVersion: null, error: messageOf(error)
+          runtimeSource: this.client.launch.source, runtimeVersion: this.client.launch.version ?? null,
+          runtimeBundled: Boolean(this.client.launch.bundled), runtimeHome: this.client.launch.home ?? null,
+          error: messageOf(error)
         },
         models: []
       }
@@ -470,7 +478,7 @@ export class CodexService extends EventEmitter {
 
   async addConnector(input: ConnectorInput): Promise<void> {
     const catalog = await this.getIntegrationCatalog()
-    if (catalog.connectors.some((connector) => connector.name === input.name)) throw new Error(`A connector named “${input.name}” already exists.`)
+    if (catalog.connectors.some((connector) => connector.name === input.name) || this.connectorConfigs.has(input.name)) throw new Error(`A connector named “${input.name}” already exists.`)
     await validateConnectorInput(input)
     const value = connectorValue(input)
     await this.client.request('config/value/write', { keyPath: `mcp_servers.${input.name}`, value, mergeStrategy: 'replace' })
@@ -483,6 +491,8 @@ export class CodexService extends EventEmitter {
     const catalog = await this.getIntegrationCatalog()
     if (!catalog.connectors.find((connector) => connector.name === name)?.userConfigured) throw new Error('Only user-configured connectors can be edited here.')
     if (input.name !== name) throw new Error('Connector names cannot be changed during edit. Remove it and add a new connector instead.')
+    const connectorAccounts = this.store.listConnectorAccounts().filter((account) => account.connectorName === name)
+    if (connectorAccounts.length) throw new Error(`Remove the ${connectorAccounts.length} account ${connectorAccounts.length === 1 ? 'identity' : 'identities'} for ${name} before changing its endpoint. This prevents an OAuth credential from being reused against a different service.`)
     await validateConnectorInput(input)
     await this.client.request('config/value/write', { keyPath: `mcp_servers.${name}`, value: connectorValue(input), mergeStrategy: 'replace' })
     await this.client.request('config/mcpServer/reload')
@@ -493,13 +503,15 @@ export class CodexService extends EventEmitter {
   async removeConnector(name: string): Promise<void> {
     const catalog = await this.getIntegrationCatalog()
     if (!catalog.connectors.find((connector) => connector.name === name)?.userConfigured) throw new Error('Only user-configured connectors can be removed here.')
+    const connectorAccounts = this.store.listConnectorAccounts().filter((account) => account.connectorName === name)
+    if (connectorAccounts.length) throw new Error(`Remove the ${connectorAccounts.length} account ${connectorAccounts.length === 1 ? 'instance' : 'instances'} for ${name} before removing its source connector.`)
     const activeAgentIds = new Set(this.store.listRuns(1_000).filter((run) => ['queued', 'running', 'waitingApproval'].includes(run.status)).map((run) => run.agentId))
     const activeUser = this.store.listAgents().find((agent) => activeAgentIds.has(agent.id) && agent.grants.allowedConnectors.includes(name))
     if (activeUser) throw new Error(`${name} cannot be removed while ${activeUser.name} has active work that may be using it.`)
     if (process.env.SPLITTBOT_TEST_MODE === '1') {
       await this.client.request('config/value/write', { keyPath: `mcp_servers.${name}`, value: null, mergeStrategy: 'replace' })
     } else {
-      await execFileAsync(this.client.launch.command, [...this.client.launch.argsPrefix, 'mcp', 'remove', name], { env: { ...process.env, ...(process.env.SPLITTBOT_CODEX_HOME ? { CODEX_HOME: process.env.SPLITTBOT_CODEX_HOME } : {}) } })
+      await execFileAsync(this.client.launch.command, [...this.client.launch.argsPrefix, 'mcp', 'remove', name], { env: codexEnvironment(this.client) })
     }
     await this.client.request('config/mcpServer/reload')
     await this.store.removeConnectorGrant(name)
@@ -527,12 +539,84 @@ export class CodexService extends EventEmitter {
   async logoutConnector(name: string): Promise<void> {
     const catalog = await this.getIntegrationCatalog()
     if (!catalog.connectors.some((connector) => connector.name === name)) throw new Error('Connector not found.')
-    if (process.env.SPLITTBOT_TEST_MODE !== '1') {
-      await execFileAsync(this.client.launch.command, [...this.client.launch.argsPrefix, 'mcp', 'logout', name], { env: { ...process.env, ...(process.env.SPLITTBOT_CODEX_HOME ? { CODEX_HOME: process.env.SPLITTBOT_CODEX_HOME } : {}) } })
+    if (process.env.SPLITTBOT_TEST_MODE === '1') {
+      await this.client.request('mcpServer/oauth/logout', { name })
+    } else {
+      await execFileAsync(this.client.launch.command, [...this.client.launch.argsPrefix, 'mcp', 'logout', name], { env: codexEnvironment(this.client) })
     }
     await this.client.request('config/mcpServer/reload')
     await this.store.addAudit({ type: 'connector.oauth.revoked', actor: 'user', agentId: null, runId: null, summary: `Revoked OAuth for ${name}`, detail: {} })
     if (process.env.SPLITTBOT_TEST_MODE !== '1') await this.recordAcceptanceCheck('oauth', 'passed', `OAuth for ${name} was revoked after connector lifecycle testing.`, 'The installed Codex CLI returned success for mcp logout.')
+    await this.refreshIntegrations()
+  }
+
+  async addConnectorAccount(input: ConnectorAccountInput): Promise<{ account: ConnectorAccount; authorizationUrl: string }> {
+    const catalog = await this.getIntegrationCatalog()
+    const source = catalog.connectors.find((connector) => connector.name === input.connectorName)
+    if (!source?.userConfigured || source.transport !== 'streamableHttp') throw new Error('Account-aware authentication requires a user-configured secure HTTP connector.')
+    const label = input.label.trim()
+    if (!label) throw new Error('Give this connector account a label, such as Work or Personal.')
+    if (this.store.listConnectorAccounts().some((account) => account.connectorName === input.connectorName && account.label.toLocaleLowerCase() === label.toLocaleLowerCase())) {
+      throw new Error(`${source.displayName} already has an account labeled “${label}”.`)
+    }
+    const sourceConfig = this.connectorConfigs.get(input.connectorName)
+    if (!sourceConfig) throw new Error('The source connector configuration is unavailable.')
+    const runtimeName = connectorAccountRuntimeName(input.connectorName)
+    await this.client.request('config/value/write', { keyPath: `mcp_servers.${runtimeName}`, value: { ...compactConfig(sourceConfig), enabled: true }, mergeStrategy: 'replace' })
+    await this.client.request('config/mcpServer/reload')
+    let account: ConnectorAccount
+    try {
+      account = await this.store.createConnectorAccount({ ...input, label, accountIdentifier: input.accountIdentifier?.trim() || null }, runtimeName)
+    } catch (error) {
+      await this.client.request('config/value/write', { keyPath: `mcp_servers.${runtimeName}`, value: null, mergeStrategy: 'replace' }).catch(() => undefined)
+      await this.client.request('config/mcpServer/reload').catch(() => undefined)
+      throw error
+    }
+    await this.store.addAudit({ type: 'connector.account.added', actor: 'user', agentId: null, runId: null, summary: `Added ${label} account for ${source.displayName}`, detail: { connectorName: input.connectorName, accountId: account.id } })
+    this.integrationCatalog = null
+    let login: { authorizationUrl: string }
+    try {
+      login = await this.client.request<{ authorizationUrl: string }>('mcpServer/oauth/login', { name: runtimeName })
+    } catch (error) {
+      await this.refreshIntegrations()
+      throw error
+    }
+    await this.store.addAudit({ type: 'connector.account.oauth.started', actor: 'user', agentId: null, runId: null, summary: `Started OAuth for ${source.displayName} · ${label}`, detail: { accountId: account.id } })
+    const refreshed = await this.getIntegrationCatalog(true)
+    return { account: refreshed.connectorAccounts.find((entry) => entry.id === account.id) ?? account, authorizationUrl: login.authorizationUrl }
+  }
+
+  async loginConnectorAccount(id: string): Promise<{ authorizationUrl: string }> {
+    const account = this.requireConnectorAccount(id)
+    const result = await this.client.request<{ authorizationUrl: string }>('mcpServer/oauth/login', { name: account.runtimeName })
+    await this.store.addAudit({ type: 'connector.account.oauth.started', actor: 'user', agentId: null, runId: null, summary: `Started OAuth for ${account.connectorName} · ${account.label}`, detail: { accountId: account.id } })
+    return result
+  }
+
+  async logoutConnectorAccount(id: string): Promise<void> {
+    const account = this.requireConnectorAccount(id)
+    if (process.env.SPLITTBOT_TEST_MODE === '1') {
+      await this.client.request('mcpServer/oauth/logout', { name: account.runtimeName })
+    } else {
+      await execFileAsync(this.client.launch.command, [...this.client.launch.argsPrefix, 'mcp', 'logout', account.runtimeName], { env: codexEnvironment(this.client) })
+    }
+    await this.client.request('config/mcpServer/reload')
+    await this.store.addAudit({ type: 'connector.account.oauth.revoked', actor: 'user', agentId: null, runId: null, summary: `Revoked OAuth for ${account.connectorName} · ${account.label}`, detail: { accountId: account.id } })
+    if (process.env.SPLITTBOT_TEST_MODE !== '1') await this.recordAcceptanceCheck('oauth', 'passed', `OAuth for ${account.connectorName} · ${account.label} was revoked after account lifecycle testing.`, 'The bundled Codex CLI returned success for mcp logout.')
+    await this.refreshIntegrations()
+  }
+
+  async removeConnectorAccount(id: string): Promise<void> {
+    const account = this.requireConnectorAccount(id)
+    const activeAgentIds = new Set(this.store.listRuns(1_000).filter((run) => ['queued', 'running', 'waitingApproval'].includes(run.status)).map((run) => run.agentId))
+    const activeUser = this.store.listAgents().find((agent) => activeAgentIds.has(agent.id) && agent.grants.allowedConnectorAccounts.includes(id))
+    if (activeUser) throw new Error(`${account.label} cannot be removed while ${activeUser.name} has active work that may be using it.`)
+    const current = (await this.getIntegrationCatalog()).connectorAccounts.find((entry) => entry.id === id)
+    if (current?.authStatus === 'oAuth') await this.logoutConnectorAccount(id)
+    await this.client.request('config/value/write', { keyPath: `mcp_servers.${account.runtimeName}`, value: null, mergeStrategy: 'replace' })
+    await this.client.request('config/mcpServer/reload')
+    await this.store.removeConnectorAccount(id)
+    await this.store.addAudit({ type: 'connector.account.removed', actor: 'user', agentId: null, runId: null, summary: `Removed ${account.connectorName} · ${account.label}`, detail: { accountId: id, grantsRemoved: true } })
     await this.refreshIntegrations()
   }
 
@@ -911,6 +995,7 @@ export class CodexService extends EventEmitter {
     if (!force && this.integrationCatalog && Date.now() - this.integrationCatalogAt < 15_000) return this.integrationCatalog
     const errors: string[] = []
     let connectors: Connector[] = []
+    let connectorAccounts: ConnectorAccount[] = []
     let skills: SkillCatalogItem[] = []
     let shortcutNames: string[] = []
     try {
@@ -927,7 +1012,9 @@ export class CodexService extends EventEmitter {
       const configured = (config.mcp_servers ?? {}) as Record<string, Record<string, unknown>>
       this.connectorConfigs = new Map(Object.entries(configured))
       const statuses = new Map((statusResult.status === 'fulfilled' ? statusResult.value.data : []).map((status) => [status.name, status]))
-      const names = new Set([...Object.keys(configured), ...statuses.keys()])
+      const storedAccounts = this.store.listConnectorAccounts()
+      const accountRuntimeNames = new Set(storedAccounts.map((account) => account.runtimeName))
+      const names = new Set([...Object.keys(configured), ...statuses.keys()].filter((name) => !accountRuntimeNames.has(name)))
       connectors = Array.from(names).map((name) => {
         const status = statuses.get(name)
         const config = configured[name] ?? {}
@@ -950,6 +1037,18 @@ export class CodexService extends EventEmitter {
         }
       })
       connectors.sort((a, b) => a.displayName.localeCompare(b.displayName) || a.name.localeCompare(b.name))
+      connectorAccounts = storedAccounts.map((account) => {
+        const status = statuses.get(account.runtimeName)
+        const accountConfig = configured[account.runtimeName]
+        const source = connectors.find((connector) => connector.name === account.connectorName)
+        return {
+          ...account,
+          connectorDisplayName: source?.displayName ?? resolveConnectorDisplayName({ name: account.connectorName }),
+          authStatus: status?.authStatus ?? 'unknown',
+          enabled: accountConfig?.enabled !== false,
+          error: !accountConfig ? 'The isolated connector configuration is missing.' : accountConfig.enabled === false ? null : status ? null : 'The account connector did not start.'
+        }
+      })
       const reviews = new Map(this.store.listSkillReviews().map((review) => [review.path, review]))
       const unique = new Map<string, SkillListResult['data'][number]['skills'][number]>()
       for (const entry of skillResult.status === 'fulfilled' ? skillResult.value.data : []) {
@@ -985,7 +1084,7 @@ export class CodexService extends EventEmitter {
       name,
       grantedAgentCount: agents.filter((agent) => agent.grants.allowedShortcuts.includes(name)).length
     }))
-    this.integrationCatalog = { connectors, skills, shortcuts, error: errors.length ? errors.join(' · ') : null }
+    this.integrationCatalog = { connectors, connectorAccounts, skills, shortcuts, error: errors.length ? errors.join(' · ') : null }
     this.integrationCatalogAt = Date.now()
     return this.integrationCatalog
   }
@@ -1295,7 +1394,7 @@ export class CodexService extends EventEmitter {
           approvalPolicy: 'on-request',
           approvalsReviewer: 'user',
           sandbox: agent.accessMode === 'workspaceWrite' ? 'workspace-write' : 'read-only',
-          developerInstructions: instructionsFor(agent, this.store.listAgents(), this.store.listAgentMemories(agent.id)),
+          developerInstructions: instructionsFor(agent, this.store.listAgents(), this.store.listAgentMemories(agent.id), this.store.listConnectorAccounts()),
           config,
           ...(agent.model ? { model: agent.model } : {})
         })
@@ -1312,7 +1411,7 @@ export class CodexService extends EventEmitter {
       approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
       sandbox: agent.accessMode === 'workspaceWrite' ? 'workspace-write' : 'read-only',
-      developerInstructions: instructionsFor(agent, this.store.listAgents(), this.store.listAgentMemories(agent.id)),
+      developerInstructions: instructionsFor(agent, this.store.listAgents(), this.store.listAgentMemories(agent.id), this.store.listConnectorAccounts()),
       config,
       serviceName: 'splittbot',
       ephemeral: false,
@@ -1332,9 +1431,16 @@ export class CodexService extends EventEmitter {
   private async threadConfigFor(agent: Agent): Promise<Record<string, unknown>> {
     await this.getIntegrationCatalog()
     if (!this.connectorConfigs.size) return {}
+    const accountByRuntimeName = new Map(this.store.listConnectorAccounts().map((account) => [account.runtimeName, account]))
     return { mcp_servers: Object.fromEntries(Array.from(this.connectorConfigs.entries()).map(([name, config]) => [name, {
       ...compactConfig(config),
-      enabled: GUI_BYPASS_CONNECTORS.has(name) ? false : isCodexRuntimeConnector(name, config) ? config.enabled !== false : config.enabled !== false && agent.grants.allowedConnectors.includes(name)
+      enabled: GUI_BYPASS_CONNECTORS.has(name)
+        ? false
+        : accountByRuntimeName.has(name)
+          ? config.enabled !== false && agent.grants.allowedConnectorAccounts.includes(accountByRuntimeName.get(name)!.id)
+          : isCodexRuntimeConnector(name, config)
+            ? config.enabled !== false
+            : config.enabled !== false && agent.grants.allowedConnectors.includes(name)
     }])) }
   }
 
@@ -1464,6 +1570,12 @@ export class CodexService extends EventEmitter {
     return agent
   }
 
+  private requireConnectorAccount(id: string): ConnectorAccount {
+    const account = this.store.getConnectorAccount(id)
+    if (!account) throw new Error('Connector account not found.')
+    return account
+  }
+
   private requireGuiSession(id: string): GuiSession {
     const session = this.store.getGuiSession(id)
     if (!session) throw new Error('GUI session not found.')
@@ -1484,6 +1596,10 @@ export class CodexService extends EventEmitter {
     for (const path of input.grants.allowedSkillPaths) {
       if (reviews.get(path) !== 'reviewed') throw new Error('An agent can only be granted skills that have passed review.')
     }
+    const connectorAccountIds = new Set(this.store.listConnectorAccounts().map((account) => account.id))
+    for (const id of input.grants.allowedConnectorAccounts) {
+      if (!connectorAccountIds.has(id)) throw new Error('One of the selected connector accounts no longer exists.')
+    }
   }
 
   private validateWorkspaceInput(input: WorkspaceInput): void {
@@ -1499,7 +1615,7 @@ export class CodexService extends EventEmitter {
   }
 }
 
-function instructionsFor(agent: Agent, agents: Agent[], memories: Array<{ content: string }>): string {
+function instructionsFor(agent: Agent, agents: Agent[], memories: Array<{ content: string }>, connectorAccounts: ConnectorAccount[]): string {
   const roster = agents
     .filter((candidate) => candidate.id !== agent.id)
     .map((candidate) => `- @${candidate.name}: ${candidate.role}`)
@@ -1520,6 +1636,7 @@ function instructionsFor(agent: Agent, agents: Agent[], memories: Array<{ conten
     'Screen, keyboard, mouse, System Events, and computer-use work must be prepared and approved in SplittBot Computer Control. Never bypass its serialized lane with shell commands, AppleScript, a direct computer-use connector, or coordinate clicks.',
     `Your approved command templates are: ${agent.grants.allowedCommands.join(', ') || 'none'}.`,
     `Your approved MCP connectors are: ${agent.grants.allowedConnectors.join(', ') || 'none'}.`,
+    `Your approved connector accounts are: ${connectorAccounts.filter((account) => agent.grants.allowedConnectorAccounts.includes(account.id)).map((account) => `${account.connectorName} · ${account.label}${account.accountIdentifier ? ` (${account.accountIdentifier})` : ''}`).join(', ') || 'none'}. Treat each account as a separate identity and never substitute another account on the same source.`,
     `Your approved Codex skill paths are: ${agent.grants.allowedSkillPaths.join(', ') || 'none'}.`,
     'Do not invoke, auto-select, or suggest that you used a connector, skill, app, command, or Shortcut that is absent from the corresponding approved list.',
     `Your approved Apple Shortcuts are: ${agent.grants.allowedShortcuts.join(', ') || 'none'}. Shortcuts require a fresh SplittBot approval and may never be used to send or publish without an additional explicit user-reviewed step.`
@@ -1580,6 +1697,15 @@ function connectorValue(input: ConnectorInput): Record<string, unknown> {
   return input.transport === 'stdio'
     ? { command: input.command, args: input.args, enabled: true }
     : { url: input.url, enabled: true }
+}
+
+function connectorAccountRuntimeName(connectorName: string): string {
+  const prefix = connectorName.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 36) || 'connector'
+  return `${prefix}_acct_${randomUUID().replaceAll('-', '').slice(0, 12)}`
+}
+
+function codexEnvironment(client: CodexAppServerClient): NodeJS.ProcessEnv {
+  return { ...process.env, ...(client.launch.home ? { CODEX_HOME: client.launch.home } : {}) }
 }
 
 function isCodexRuntimeConnector(name: string, config: Record<string, unknown>): boolean {

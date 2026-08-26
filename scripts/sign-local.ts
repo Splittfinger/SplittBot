@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
-const release = join(process.cwd(), 'release')
+const release = process.env.SPLITTBOT_RELEASE_DIR ? resolve(process.env.SPLITTBOT_RELEASE_DIR) : join(process.cwd(), 'release')
 const entitlements = join(process.cwd(), 'build', 'entitlements.mac.plist')
 const appDirectory = readdirSync(release, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && entry.name.startsWith('mac'))
