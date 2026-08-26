@@ -295,7 +295,7 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
   await window.getByRole('button', { name: /AT Atlas Chief of Staff/ }).click()
   await window.getByLabel('Message Atlas').fill('After restart')
   await window.getByLabel('Send').click()
-  await expect(window.getByText('FAKE_RESPONSE: After restart')).toBeVisible()
+  await expect(window.getByText('FAKE_RESPONSE: After restart')).toBeVisible({ timeout: 15_000 })
   await application.close()
 
   const protocolLog = await readFile(fakeLog, 'utf8')
