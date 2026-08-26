@@ -98,7 +98,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .metric strong, .metric span { display: block; }
 .metric strong { font: 500 28px Georgia, serif; }
 .metric div span { color: var(--muted); font-size: 10px; margin-top: 4px; }
-.dashboard-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 20px; }
+.dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 20px; }
+.dashboard-grid > .panel { min-width: 0; }
 .panel, .table-panel { background: #fff; border: 1px solid #e4dfd6; border-radius: 18px; overflow: hidden; }
 .panel { padding: 20px; }
 .panel-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
@@ -111,11 +112,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .home-agent strong { font-size: 11px; }
 .home-agent div span { font-size: 9px; color: var(--muted); margin-top: 3px; }
 .ready-pill { font-size: 8px; font-weight: 800; color: #25775e; background: #e3f4ed; border-radius: 8px; padding: 4px 6px; text-transform: uppercase; letter-spacing: .5px; }
-.result-list { display: flex; flex-direction: column; }
-.run-compact { display: grid; grid-template-columns: 9px 1fr 16px; gap: 10px; align-items: center; padding: 11px 0; border-bottom: 1px solid #eeeae4; }
+.result-list { display: flex; flex-direction: column; min-width: 0; }
+.run-compact { width: 100%; min-width: 0; display: grid; grid-template-columns: 9px minmax(0, 1fr) 16px; gap: 10px; align-items: center; padding: 11px 7px; border: 0; border-bottom: 1px solid #eeeae4; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; box-sizing: border-box; border-radius: 8px; }
 .run-compact:last-child { border: 0; }
+.run-compact:hover { background: #faf8f4; }
+.run-compact:focus-visible { outline: 2px solid #8b72d9; outline-offset: 2px; }
+.run-compact > div { min-width: 0; }
 .run-compact strong, .run-compact span { display: block; }
-.run-compact strong { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.run-compact strong { display: -webkit-box; max-width: 100%; font-size: 10px; line-height: 1.35; white-space: normal; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .run-compact div span { font-size: 9px; color: var(--muted); margin-top: 3px; }
 
 .conversation { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }

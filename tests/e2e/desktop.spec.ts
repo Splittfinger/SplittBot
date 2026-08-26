@@ -33,12 +33,33 @@ test('Phase 0-5 desktop flow persists agents, gates tools, attaches images, and 
 
   await window.getByLabel('Agents').click()
   const composer = window.getByLabel('Message Atlas')
+  const longTask = 'Atlas should read all other agents and give me a detailed summary of everything accomplished today and this week, including every outstanding approval or item that needs my attention.'
   await window.getByLabel('Attach images').click()
   await expect(window.getByText('test-image.png', { exact: true })).toBeVisible()
-  await composer.fill('Hello from E2E')
+  await composer.fill(longTask)
   await window.getByLabel('Send').click()
   await expect(window.getByText('1 user-selected image attached to Atlas’s turn.')).toBeVisible()
-  await expect(window.getByText('FAKE_RESPONSE: Hello from E2E')).toBeVisible()
+  await expect(window.getByText(`FAKE_RESPONSE: ${longTask}`)).toBeVisible()
+
+  await window.getByLabel('Home').click()
+  const recentRun = window.getByRole('button', { name: `Open completed run: ${longTask}` })
+  await expect(recentRun).toBeVisible()
+  const recentLayout = await recentRun.evaluate((row) => {
+    const panel = row.closest('.panel') as HTMLElement
+    const title = row.querySelector('strong') as HTMLElement
+    const rowBounds = row.getBoundingClientRect()
+    const panelBounds = panel.getBoundingClientRect()
+    const titleStyle = getComputedStyle(title)
+    return {
+      contained: rowBounds.right <= panelBounds.right && row.scrollWidth <= row.clientWidth,
+      lineClamp: titleStyle.webkitLineClamp,
+      whiteSpace: titleStyle.whiteSpace
+    }
+  })
+  expect(recentLayout).toEqual({ contained: true, lineClamp: '2', whiteSpace: 'normal' })
+  await recentRun.click()
+  await expect(window.getByRole('heading', { name: 'Runs', exact: true })).toBeVisible()
+  await window.getByLabel('Agents').click()
 
   await composer.fill('REQUEST_APPROVAL')
   await window.getByLabel('Send').click()

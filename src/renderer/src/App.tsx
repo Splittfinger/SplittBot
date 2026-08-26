@@ -315,7 +315,7 @@ function Home({ snapshot, onOpen }: { snapshot: AppSnapshot; onOpen: (section: S
       </section>
       <section className="panel">
         <div className="panel-heading"><div><span className="eyebrow">Recent results</span><h3>Completed work</h3></div><button className="text-button" onClick={() => onOpen('runs')}>All runs <ChevronRight size={14} /></button></div>
-        {complete.length ? <div className="result-list">{complete.map((run) => <RunCompact key={run.id} run={run} agent={snapshot.agents.find((agent) => agent.id === run.agentId)} />)}</div> : <Empty icon={<Clock3 />} title="No completed runs yet" detail="Give an agent its first task to see results here." />}
+        {complete.length ? <div className="result-list">{complete.map((run) => <RunCompact key={run.id} run={run} agent={snapshot.agents.find((agent) => agent.id === run.agentId)} onOpen={() => onOpen('runs')} />)}</div> : <Empty icon={<Clock3 />} title="No completed runs yet" detail="Give an agent its first task to see results here." />}
       </section>
     </div>
   </div>
@@ -884,7 +884,13 @@ function AgentEditor({ value, agents, models, connectors, skills, shortcuts, fal
 function Page({ title, eyebrow, detail, children }: { title: string; eyebrow: string; detail: string; children: ReactNode }): JSX.Element { return <div className="page scroll-page"><header className="page-title"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2><p>{detail}</p></div></header>{children}</div> }
 function Empty({ icon, title, detail }: { icon: JSX.Element; title: string; detail: string }): JSX.Element { return <div className="empty"><span>{icon}</span><strong>{title}</strong><p>{detail}</p></div> }
 function StatusPill({ status }: { status: string }): JSX.Element { return <span className={`status-pill ${status}`}>{statusText(status)}</span> }
-function RunCompact({ run, agent }: { run: Run; agent?: Agent }): JSX.Element { return <div className="run-compact"><span className={`status-orb ${run.status}`} /><div><strong>{run.input}</strong><span>{agent?.name || 'Agent'} · {formatTime(run.startedAt)}</span></div><ChevronRight size={15} /></div> }
+function RunCompact({ run, agent, onOpen }: { run: Run; agent?: Agent; onOpen: () => void }): JSX.Element {
+  return <button type="button" className="run-compact" onClick={onOpen} aria-label={`Open completed run: ${run.input}`}>
+    <span className={`status-orb ${run.status}`} />
+    <div><strong>{run.input}</strong><span>{agent?.name || 'Agent'} · {formatTime(run.startedAt)}</span></div>
+    <ChevronRight size={15} />
+  </button>
+}
 
 function statusText(status: string): string {
   return ({ queued: 'Queued', running: 'Working', waitingApproval: 'Needs approval', pendingApproval: 'Needs approval', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', pending: 'Waiting', approved: 'Approved', declined: 'Declined', expired: 'Expired', ready: 'Ready', active: 'Active', paused: 'Paused', takeover: 'Takeover', stopped: 'Stopped', granted: 'Granted', denied: 'Denied', notDetermined: 'Not determined', restricted: 'Restricted', unavailable: 'Unavailable', missed: 'Missed', reviewed: 'Reviewed', unreviewed: 'Unreviewed', blocked: 'Blocked' } as Record<string, string>)[status] || status
