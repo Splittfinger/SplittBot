@@ -7,6 +7,7 @@ import type { CodexService } from './services/codex-service'
 import { avatarImageMime, MAX_AVATAR_BYTES } from './services/avatar-image'
 import { MAX_CHAT_IMAGES, validateChatImagePath, type ResolvedChatImage } from './services/chat-attachments'
 import { writePrivateFile } from './services/data-recovery'
+import { revealFile } from './services/reveal-file'
 
 const grantsSchema = z.object({
   readableRoots: z.array(z.string()),
@@ -316,15 +317,15 @@ export function registerIpc(service: CodexService, system: IpcSystemActions): vo
     if (url.protocol !== 'https:') throw new Error('Only HTTPS links may be opened.')
     return system.openExternal(url.toString())
   })
-  ipcMain.handle('app:revealPath', (_event, value) => {
+  ipcMain.handle('app:revealPath', async (_event, value) => {
     const path = z.string().min(1).parse(value)
-    shell.showItemInFolder(path)
+    if (process.env.SPLITTBOT_TEST_MODE !== '1') await revealFile(path)
   })
   ipcMain.handle('app:getVersion', () => app.getVersion())
-  ipcMain.handle('app:revealInstalledApp', () => {
+  ipcMain.handle('app:revealInstalledApp', async () => {
     if (process.env.SPLITTBOT_TEST_MODE === '1') return
     if (!app.isPackaged) throw new Error('Use the packaged SplittBot app for Mac permission setup.')
-    shell.showItemInFolder(dirname(dirname(dirname(app.getPath('exe')))))
+    await revealFile(dirname(dirname(dirname(app.getPath('exe')))))
   })
   ipcMain.handle('app:openFullDiskAccess', async () => {
     if (process.env.SPLITTBOT_TEST_MODE !== '1') await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles')

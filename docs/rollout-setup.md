@@ -10,6 +10,16 @@ The rollout update passed type checking, production build, 69 unit tests, 10 iso
 
 A 09:30 local-time Codex review heartbeat was created **paused**. It must not be activated until the native 09:00 pilot schedule is actually configured and verified. Neither the pilot nor its review is currently running.
 
+## Live activation follow-up — September 11
+
+This section supersedes the pending-installation and paused-monitor status above. The tested update was installed at the existing app location after a private, integrity-checked backup. The original bundle was retained locally for rollback. The existing Pro session, three Bots, and durable Action remained present. Fresh packaged permission checks still reported Accessibility, Screen Recording, and Messages denied; Messages testing stopped without reading history or sending.
+
+The app had no existing native routines or monitored schedules. **Seven-day read-only mailbox pilot** was created for Email Cleanup through the app UI and its stored configuration was independently checked: active, daily 09:00, all seven days, stop after September 18, catch up once, one retry after five minutes, failure notifications. Its first scheduled start is September 12 at 15:00 UTC, which is 09:00 America/Denver; the Mac's configured timezone was verified. The instructions require exact verification of the existing mailbox identity, at most 50 main-Inbox messages from the preceding 24 hours, no external writes or local-computer tools, and Atlas review of the shared result. The 09:30 Codex review heartbeat is now **active**. No second mailbox was substituted or disconnected.
+
+A September 11 manual preflight was started, separate from the seven scheduled daily observations. During that run, clicking **Show installed SplittBot** exposed a live macOS stall. A process sample placed Electron's main thread inside `NSWorkspace activateFileViewerSelectingURLs` and the sandbox-extension syscall. The hung app and its owned runtime processes were stopped; database integrity remained `ok`. This interrupted preflight is not counted as a pass.
+
+The reveal operation now uses a separate, bounded `/usr/bin/open -R` process, with an independent response deadline and no shell interpolation. Both installed-app and artifact reveal paths use the fix; it does not grant or bypass Mac permissions. This isolates Finder failures from the UI, scheduler, and Bot runtime. The approach follows the [Electron shell API](https://www.electronjs.org/docs/latest/api/shell) and [Node asynchronous child-process API](https://nodejs.org/api/child_process.html#child_processexecfilefile-args-options-callback). Four additional regression tests cover argument isolation, invalid paths, a helper that never exits, and safe error messages. The fixed build passed 73 unit tests, 10 desktop tests, 2 packaged tests, signature verification, and matching staged/installed checksums. Live restart/retry verification is in progress.
+
 ## Mac permission repair
 
 The current installed app reported Accessibility and Screen Recording denied. System Settings displayed an enabled SplittBot Accessibility entry; that mismatch could be an old bundle/signing entry, but the exact cause has not been proven. Messages status was blocked and testing stopped as required by the local iMessage skill.
