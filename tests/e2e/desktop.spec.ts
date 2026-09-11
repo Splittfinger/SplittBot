@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { SqliteStore } from '../../src/main/db/store'
+import { emulateAppearance, setDesktopViewport } from './display'
 
 test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates tools, attaches images, and safely controls one GUI lane', async () => {
   const dataDirectory = await mkdtemp(join(tmpdir(), 'splittbot-e2e-'))
@@ -29,6 +30,7 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
 
   let application = await electron.launch({ args: [resolve('out/main/index.js')], env: environment })
   let window = await application.firstWindow()
+  await emulateAppearance(window)
   await expect(window.getByText('Good to see you.')).toBeVisible()
   expect(await window.evaluate(() => typeof (globalThis as { process?: unknown }).process)).toBe('undefined')
   expect(await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getMinimumSize())).toEqual([900, 640])
@@ -377,21 +379,23 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
   await window.getByRole('button', { name: /Maya Researcher/ }).click()
   await window.getByLabel('Message Maya').fill('Check explicit memory context')
   await window.getByLabel('Send').click()
-  await expect(window.getByText(/Complete the user's original task: Check explicit memory context/)).toBeVisible()
+  // Atlas may already have quoted this response by the time the assertion runs.
+  // Match the original agent result, not the collaborator's review of it.
+  await expect(window.getByText(/^FAKE_RESPONSE:.*Complete the user's original task: Check explicit memory context/s)).toBeVisible()
 
   await window.getByLabel('Settings').click()
   await window.getByRole('button', { name: 'Check runtime & permissions' }).click()
   await expect(window.getByText('Deterministic GUI adapter results are not accepted as packaged permission evidence.')).toBeVisible()
   await window.getByRole('button', { name: 'Exercise catch-up path' }).click()
   await expect(window.getByText(/real Mac sleep\/wake cycle/)).toBeVisible()
-  await window.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' })
+  await emulateAppearance(window, { colorScheme: 'dark', reducedMotion: 'reduce' })
   const darkAcceptance = await window.locator('.acceptance-list article').first().evaluate((row) => ({
     background: getComputedStyle(row).backgroundColor,
     text: getComputedStyle(row.querySelector('strong') as HTMLElement).color
   }))
   expect(darkAcceptance.background).not.toBe('rgb(250, 248, 244)')
   expect(darkAcceptance.text).not.toBe(darkAcceptance.background)
-  await window.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' })
+  await emulateAppearance(window, { colorScheme: 'light', reducedMotion: 'reduce' })
 
   await window.getByLabel('Agents', { exact: true }).click()
   await window.getByRole('button', { name: /Maya Researcher/ }).click()
@@ -626,6 +630,7 @@ test('Codex usage footer fails closed when the runtime does not expose account l
   })
   const window = await application.firstWindow()
   const usageButton = window.getByRole('button', { name: 'Codex connected, Plus plan, usage unavailable' })
+  await setDesktopViewport(window)
   await expect(usageButton).toBeVisible()
   await expect(usageButton).toBeDisabled()
   await expect(usageButton.getByText('Usage unavailable', { exact: true })).toBeVisible()

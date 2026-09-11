@@ -3,6 +3,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { SqliteStore } from '../../src/main/db/store'
+import { setDesktopViewport } from './display'
 
 const environment = (directory: string) => ({
   ...process.env, SPLITTBOT_DATA_DIR: directory, SPLITTBOT_TEST_MODE: '1', SPLITTBOT_DEFAULT_CWD: process.cwd(),
@@ -14,6 +15,7 @@ test('Home shortcuts work with zero counts, support keyboard access, and starter
   const application = await electron.launch({ args: [resolve('out/main/index.js')], env: environment(directory) })
   try {
     const page = await application.firstWindow()
+    await setDesktopViewport(page)
     await expect(page.getByText('Good to see you.')).toBeVisible()
     const work = page.getByRole('button', { name: 'Working now: 0. View current work' })
     await work.focus()
@@ -74,6 +76,7 @@ test('Home cards, history, actions, notifications, and artifacts open exact work
   const application = await electron.launch({ args: [resolve('out/main/index.js')], env: environment(directory) })
   try {
     const page = await application.firstWindow()
+    await setDesktopViewport(page)
     const errors: string[] = []
     page.on('pageerror', (error) => errors.push(error.message))
     await expect(page.getByText('Good to see you.')).toBeVisible()

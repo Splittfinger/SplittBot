@@ -2,6 +2,7 @@ import { _electron as electron, expect, test } from '@playwright/test'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { emulateAppearance } from './display'
 
 test('glass workspace supports light, dark, accessibility, compact layout, and contextual navigation', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'splittbot-glass-'))
@@ -26,7 +27,7 @@ test('glass workspace supports light, dark, accessibility, compact layout, and c
     await expect(page.getByRole('button', { name: 'Open Dexter Fox', exact: true })).toBeVisible()
     const session = await page.context().newCDPSession(page)
     await session.send('Emulation.setDeviceMetricsOverride', { width: 1420, height: 900, deviceScaleFactor: 1, mobile: false })
-    await page.emulateMedia({ colorScheme: 'light' })
+    await emulateAppearance(page)
     await expect(page.locator('.team-pane')).toBeHidden()
     await expect(page.locator('.rail .usage-summary')).toBeVisible()
     const material = await page.locator('.rail').evaluate((rail) => {
@@ -67,17 +68,17 @@ test('glass workspace supports light, dark, accessibility, compact layout, and c
     await page.getByRole('button', { name: 'Cancel', exact: true }).click()
 
     await page.getByLabel('Home', { exact: true }).click()
-    await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' })
+    await emulateAppearance(page, { colorScheme: 'dark', reducedMotion: 'reduce' })
     await page.screenshot({ path: test.info().outputPath('home-dark.png') })
     expect(await page.locator('.rail-button.active').evaluate((button) => getComputedStyle(button).transitionDuration)).toBe('1e-06s')
 
-    await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce', contrast: 'more' })
+    await emulateAppearance(page, { reducedMotion: 'reduce', contrast: 'more' })
     expect(await page.locator('.rail').evaluate((rail) => getComputedStyle(rail).backdropFilter)).toBe('none')
-    await page.emulateMedia({ colorScheme: 'light', contrast: 'no-preference' })
-    await session.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }] })
+    await emulateAppearance(page, { reducedTransparency: 'reduce' })
     expect(await page.locator('.composer-box').count()).toBe(0)
     expect(await page.locator('.rail').evaluate((rail) => getComputedStyle(rail).backdropFilter)).toBe('none')
-    await session.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] })
+    await emulateAppearance(page)
+    expect(await page.locator('.rail').evaluate((rail) => getComputedStyle(rail).backdropFilter)).toContain('blur(28px)')
 
     await session.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 640, deviceScaleFactor: 1, mobile: false })
     await expect(page.locator('.rail .usage-summary')).toBeVisible()
