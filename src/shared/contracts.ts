@@ -395,9 +395,10 @@ export interface SkillCatalogItem {
 export type RoutineStatus = 'active' | 'paused'
 export type RoutineCatchUpPolicy = 'skip' | 'runOnce'
 export type RoutineNotifyPolicy = 'always' | 'failure' | 'never'
-export type RoutineSchedule =
+export type RoutineSchedule = (
   | { kind: 'interval'; intervalMinutes: number }
   | { kind: 'daily'; timeOfDay: string; daysOfWeek: number[] }
+) & { stopAfterDate?: string }
 
 export interface Routine {
   id: string
@@ -696,6 +697,7 @@ export interface DesktopApi {
     refreshPermissions: () => Promise<void>
     exerciseIMessage: () => Promise<void>
     exerciseWakeCatchUp: () => Promise<void>
+    confirmWakeNotification: () => Promise<void>
   }
   artifacts: {
     create: (input: { agentId: string; runId?: string | null; name: string; content: string }) => Promise<Artifact>
@@ -718,6 +720,8 @@ export interface DesktopApi {
     openExternal: (url: string) => Promise<{ browserName: string; forcedBrowser: boolean }>
     revealPath: (path: string) => Promise<void>
     getVersion: () => Promise<string>
+    revealInstalledApp: () => Promise<void>
+    openFullDiskAccess: () => Promise<void>
   }
   events: {
     subscribe: (listener: (event: AppEvent) => void) => () => void

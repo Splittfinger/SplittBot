@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { mkdir } from 'node:fs/promises'
-import { app, BrowserWindow, dialog, nativeTheme, Notification, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeTheme, Notification, powerMonitor, shell } from 'electron'
 import { resolveCodexLaunch } from './codex/runtime'
 import { CodexAppServerClient } from './codex/client'
 import { SqliteStore } from './db/store'
@@ -70,6 +70,21 @@ async function createApplication(): Promise<void> {
   service.on('event', (event) => {
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send('splittbot:event', event)
   })
+
+  // Only native suspend/resume events count as a real cycle. Timer gaps and
+  // deterministic test adapters cannot satisfy this acceptance check.
+  if (process.env.SPLITTBOT_TEST_MODE !== '1') {
+    let suspendedAt: number | null = null
+    powerMonitor.on('suspend', () => { suspendedAt = Date.now() })
+    powerMonitor.on('resume', () => {
+      const start = suspendedAt
+      suspendedAt = null
+      if (start === null || quitting) return
+      void service?.observeNativeWake(start, Date.now()).catch((error) => {
+        void logger.write('error', 'system.wake.failed', { message: String(error) })
+      })
+    })
+  }
 
   reopenWindow = () => createWindow(logger, openExternal)
   await reopenWindow()

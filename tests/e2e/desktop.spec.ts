@@ -386,7 +386,7 @@ test('Phase 0-6 desktop flow persists agents, isolates connector accounts, gates
   await window.getByLabel('Settings').click()
   await window.getByRole('button', { name: 'Check runtime & permissions' }).click()
   await expect(window.getByText('Deterministic GUI adapter results are not accepted as packaged permission evidence.')).toBeVisible()
-  await window.getByRole('button', { name: 'Exercise catch-up path' }).click()
+  await window.getByRole('button', { name: 'Start sleep/wake check' }).click()
   await expect(window.getByText(/real Mac sleep\/wake cycle/)).toBeVisible()
   await emulateAppearance(window, { colorScheme: 'dark', reducedMotion: 'reduce' })
   const darkAcceptance = await window.locator('.acceptance-list article').first().evaluate((row) => ({

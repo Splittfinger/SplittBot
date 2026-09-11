@@ -2,6 +2,8 @@
 
 Status: the development checkpoint and local acceptance pass are complete. The supervised personal-use beta can proceed for existing email access; this is **not** public-release or week-long reliability sign-off.
 
+Follow-up: [supervised rollout setup](rollout-setup.md) records the requested 09:00 Mountain pilot, permission-repair controls, bounded schedules, native wake evidence, the second-account authorization dependency, and Apple enrollment prerequisites. Its current setup status supersedes the original "awaiting time/mailbox" notes below. The seven-day pilot and physical sleep/wake observation are not yet complete.
+
 ## Preserved baseline
 
 - Branch: `codex/private-beta-readiness`; initial checkpoint `9d5fd81` preserves the standalone runtime, account usage, imports, Action Center, reliability fixes, glass UI, and purposeful navigation.

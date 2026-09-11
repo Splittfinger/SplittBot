@@ -1,5 +1,18 @@
 import type { RoutineSchedule } from '../../shared/contracts'
 
+// The final date is inclusive in the same Mac-local time zone as daily runs.
+// Invalid persisted bounds fail closed instead of turning into an endless pilot.
+export function scheduleHasEnded(schedule: RoutineSchedule, now = new Date()): boolean {
+  if (!schedule.stopAfterDate) return false
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(schedule.stopAfterDate)) return true
+  const end = new Date(`${schedule.stopAfterDate}T00:00:00`)
+  if (!Number.isFinite(end.getTime()) || !Number.isFinite(now.getTime())) return true
+  const normalized = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`
+  if (normalized !== schedule.stopAfterDate) return true
+  end.setDate(end.getDate() + 1)
+  return now >= end
+}
+
 export function computeNextRun(schedule: RoutineSchedule, after: Date): Date {
   if (Number.isNaN(after.getTime())) throw new Error('The schedule anchor is invalid.')
   if (schedule.kind === 'interval') {

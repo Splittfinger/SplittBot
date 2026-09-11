@@ -91,7 +91,8 @@ const api: DesktopApi = {
   acceptance: {
     refreshPermissions: () => ipcRenderer.invoke('acceptance:refreshPermissions'),
     exerciseIMessage: () => ipcRenderer.invoke('acceptance:exerciseIMessage'),
-    exerciseWakeCatchUp: () => ipcRenderer.invoke('acceptance:exerciseWakeCatchUp')
+    exerciseWakeCatchUp: () => ipcRenderer.invoke('acceptance:exerciseWakeCatchUp'),
+    confirmWakeNotification: () => ipcRenderer.invoke('acceptance:confirmWakeNotification')
   },
   artifacts: {
     create: (input) => ipcRenderer.invoke('artifacts:create', input),
@@ -113,7 +114,9 @@ const api: DesktopApi = {
   app: {
     openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
     revealPath: (path) => ipcRenderer.invoke('app:revealPath', path),
-    getVersion: () => ipcRenderer.invoke('app:getVersion')
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+    revealInstalledApp: () => ipcRenderer.invoke('app:revealInstalledApp'),
+    openFullDiskAccess: () => ipcRenderer.invoke('app:openFullDiskAccess')
   },
   events: {
     subscribe: (listener) => {

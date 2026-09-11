@@ -1,7 +1,7 @@
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CodexAppServerClient } from '../../src/main/codex/client'
 import { SqliteStore } from '../../src/main/db/store'
 import { CodexService } from '../../src/main/services/codex-service'
@@ -16,7 +16,7 @@ const input: AgentInput = {
   grants: { readableRoots: ['/tmp'], writableRoots: [], allowedCommands: [], allowedApps: [], allowedConnectedApps: [], allowedConnectors: [], allowedConnectorAccounts: [], allowedSkillPaths: [], allowedShortcuts: [], networkAccess: false }
 }
 const cleanup: Array<() => Promise<void>> = []
-afterEach(async () => { for (const close of cleanup.splice(0)) await close() })
+afterEach(async () => { for (const close of cleanup.splice(0)) await close(); vi.unstubAllEnvs() })
 
 async function setup(...flags: string[]) {
   const directory = await mkdtemp(join(tmpdir(), 'splittbot-reliability-'))
@@ -39,6 +39,53 @@ async function until(predicate: () => boolean) {
 }
 
 describe('service reliability', () => {
+  it('stops expired pilots before catch-up, queued retries, manual runs, or resume', async () => {
+    const { service, store, agent } = await setup()
+    const routine = await store.createRoutine({ agentId: agent.id, title: 'Expired pilot', prompt: 'Must not run', schedule: { kind: 'interval', intervalMinutes: 1, stopAfterDate: '2020-01-01' }, catchUpPolicy: 'runOnce', maxRetries: 2, retryDelayMinutes: 1, notifyPolicy: 'never' }, '2020-01-01T12:00:00.000Z')
+    const retry = await store.createRoutineAttempt({ routineId: routine.id, attemptNo: 2, status: 'queued', scheduledFor: '2020-01-01T12:00:00.000Z', retryAt: '2020-01-01T12:01:00.000Z' })
+    await service.exerciseWakeCatchUp()
+    expect(store.getRoutine(routine.id)?.status).toBe('paused')
+    expect(store.listRoutineAttempts().find((item) => item.id === retry.id)).toMatchObject({ status: 'missed', retryAt: null })
+    await expect(service.runRoutineNow(routine.id)).rejects.toThrow('ended')
+    await expect(service.setRoutineStatus(routine.id, 'active')).rejects.toThrow('ended')
+    expect(store.listRuns()).toHaveLength(0)
+  })
+
+  it('requires native wake evidence before accepting a notification confirmation', async () => {
+    const { service, store } = await setup()
+    await expect(service.confirmWakeNotification()).rejects.toThrow('No recent native wake')
+    await service.exerciseWakeCatchUp()
+    await expect(service.confirmWakeNotification()).rejects.toThrow('No recent native wake')
+    expect(store.listAcceptanceChecks().find((item) => item.key === 'sleepWake')?.status).toBe('blocked')
+  })
+
+  it('does not pass wake acceptance with no due routine or in deterministic mode', async () => {
+    const { service, store } = await setup()
+    await service.exerciseWakeCatchUp()
+    await service.observeNativeWake(Date.now() - 60_000, Date.now() - 1_000)
+    await expect(service.confirmWakeNotification()).rejects.toThrow('no catch-up routine')
+    expect(store.listAcceptanceChecks().find((item) => item.key === 'sleepWake')?.status).toBe('blocked')
+    vi.stubEnv('SPLITTBOT_TEST_MODE', '1')
+    await service.observeNativeWake(Date.now() - 60_000, Date.now() - 1_000)
+    await expect(service.confirmWakeNotification()).rejects.toThrow('No recent native wake')
+  })
+
+  it('requires completed catch-up evidence and a fresh one-time confirmation', async () => {
+    const { service, store, agent } = await setup()
+    await service.exerciseWakeCatchUp()
+    const now = Date.now()
+    await store.createRoutine({ agentId: agent.id, title: 'Wake fixture', prompt: 'REQUEST_APPROVAL', schedule: { kind: 'interval', intervalMinutes: 60 }, catchUpPolicy: 'runOnce', maxRetries: 0, retryDelayMinutes: 1, notifyPolicy: 'never' }, new Date(now - 30_000).toISOString())
+    await service.observeNativeWake(now - 60_000, now - 1_000)
+    await until(() => store.listRuns().some((run) => run.status === 'waitingApproval'))
+    await expect(service.confirmWakeNotification()).rejects.toThrow('has not completed successfully')
+    await service.resolveApproval(store.listApprovals().find((item) => item.status === 'pending')!.id, 'approve')
+    await until(() => store.listRoutineAttempts()[0]?.status === 'completed')
+    await service.confirmWakeNotification()
+    expect(store.listAcceptanceChecks().find((item) => item.key === 'sleepWake')?.status).toBe('passed')
+    await expect(service.confirmWakeNotification()).rejects.toThrow('No recent native wake')
+    await service.observeNativeWake(Date.now() - 1_000, Date.now())
+    expect(store.listAcceptanceChecks().find((item) => item.key === 'sleepWake')?.status).toBe('passed')
+  })
   it('serializes rapid messages to the same persistent thread', async () => {
     const { service, store, agent } = await setup('--slow-initialize')
     const runs = await Promise.all(Array.from({ length: 4 }, (_, index) => service.startMessage(agent.id, `Task ${index}`)))

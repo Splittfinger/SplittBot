@@ -48,7 +48,8 @@ import { SqliteStore } from '../db/store'
 import type { JsonLogger } from './logger'
 import { LocalAutomationService } from './local-automation'
 import { GuiAutomationBroker, validateGuiSessionInput } from './gui-automation'
-import { computeNextRun, nextAfterNow } from './schedule'
+import { computeNextRun, nextAfterNow, scheduleHasEnded } from './schedule'
+import { parseIMessageResult } from './imessage-result'
 import { resolveSkillDisplayName } from './skill-display-name'
 import { resolveConnectorDisplayName } from './connector-display-name'
 import type { ResolvedChatImage } from './chat-attachments'
@@ -226,6 +227,8 @@ export class CodexService extends EventEmitter {
   private stopping = false
   private integrationDiscovery: Promise<IntegrationCatalog> | null = null
   private appConfigs: Record<string, unknown> = {}
+  private pendingWake: { suspendedAt: string; resumedAt: string; due: Array<{ routineId: string; scheduledFor: string }> } | null = null
+  private wakeCheckArmedUntil = 0
 
   constructor(
     private readonly store: SqliteStore,
@@ -1105,6 +1108,7 @@ export class CodexService extends EventEmitter {
   async setRoutineStatus(id: string, status: RoutineStatus): Promise<void> {
     const routine = this.store.getRoutine(id)
     if (!routine) throw new Error('Routine not found.')
+    if (status === 'active' && scheduleHasEnded(routine.schedule)) throw new Error('This routine has ended. Edit its stop date before resuming it.')
     await this.store.setRoutineStatus(id, status)
     await this.store.addAudit({ type: 'routine.status', actor: 'user', agentId: routine.agentId, runId: null, summary: `${status === 'active' ? 'Resumed' : 'Paused'} routine ${routine.title}`, detail: { status } })
     this.emitEvent({ type: 'data:changed' })
@@ -1129,6 +1133,7 @@ export class CodexService extends EventEmitter {
   async runRoutineNow(id: string): Promise<void> {
     const routine = this.store.getRoutine(id)
     if (!routine) throw new Error('Routine not found.')
+    if (scheduleHasEnded(routine.schedule)) throw new Error('This routine has ended. Edit its stop date before running it again.')
     if (this.runningRoutineIds.has(id)) throw new Error('This routine is already running.')
     this.track(this.executeRoutineAttempt(routine, new Date().toISOString(), 1))
   }
@@ -1222,8 +1227,51 @@ export class CodexService extends EventEmitter {
   }
 
   async exerciseWakeCatchUp(): Promise<void> {
-    await this.processSchedules(true)
-    await this.recordAcceptanceCheck('sleepWake', 'blocked', 'The catch-up path completed, but a real Mac sleep/wake cycle and resulting notification still require observation.', 'Deterministic recovery execution is recorded separately from real sleep/wake evidence.')
+    const recovered = await this.processSchedules(true)
+    this.pendingWake = null
+    this.wakeCheckArmedUntil = process.env.SPLITTBOT_TEST_MODE !== '1' && recovered ? Date.now() + 30 * 60_000 : 0
+    await this.recordAcceptanceCheck('sleepWake', 'blocked', this.wakeCheckArmedUntil ? 'Wake check armed for 30 minutes. Sleep this Mac across a scheduled routine time, wake it, wait for the routine to finish, then confirm the wake notification.' : 'A real Mac sleep/wake cycle and resulting notification still require observation. Deterministic or busy recovery cannot arm the live check.', 'Running the catch-up code alone is not evidence of an actual sleep/wake cycle.')
+  }
+
+  async observeNativeWake(suspendedAt: number, resumedAt: number): Promise<void> {
+    this.pendingWake = null
+    if (process.env.SPLITTBOT_TEST_MODE === '1' || !Number.isFinite(suspendedAt) || !Number.isFinite(resumedAt) || resumedAt <= suspendedAt) return
+    const duringSleep = (value: string) => Date.parse(value) >= suspendedAt && Date.parse(value) <= resumedAt
+    // A timer may have processed a due routine just before the native resume
+    // callback. Include its attempt, but never count an older/manual run.
+    const due = new Map<string, { routineId: string; scheduledFor: string }>()
+    const recentAttempts = this.store.listRoutineAttempts(1_000)
+    for (const routine of this.store.listRoutines()) {
+      if (routine.status !== 'active' || routine.catchUpPolicy !== 'runOnce' || scheduleHasEnded(routine.schedule)) continue
+      if (duringSleep(routine.nextRunAt)) due.set(routine.id, { routineId: routine.id, scheduledFor: routine.nextRunAt })
+      for (const attempt of recentAttempts) {
+        if (attempt.routineId === routine.id && duringSleep(attempt.scheduledFor) && attempt.startedAt && Date.parse(attempt.startedAt) >= resumedAt) due.set(routine.id, { routineId: routine.id, scheduledFor: attempt.scheduledFor })
+      }
+    }
+    const cycle = { suspendedAt: new Date(suspendedAt).toISOString(), resumedAt: new Date(resumedAt).toISOString(), due: [...due.values()] }
+    await this.store.addAudit({ type: 'system.sleepWake', actor: 'system', agentId: null, runId: null, summary: 'macOS reported a suspend/resume cycle', detail: cycle })
+    const recovered = await this.processSchedules(true)
+    // Normal wakes still run recovery, without repeated test notifications or
+    // overwriting a previously completed acceptance check.
+    if (Date.now() > this.wakeCheckArmedUntil) return
+    this.wakeCheckArmedUntil = 0
+    if (!recovered) {
+      await this.recordAcceptanceCheck('sleepWake', 'blocked', 'macOS wake was observed, but the catch-up check was busy or failed. Retry a supervised cycle.', JSON.stringify(cycle))
+      return
+    }
+    this.pendingWake = cycle
+    this.notifyNative('SplittBot wake check', 'Your Mac woke and routine catch-up was checked. Confirm this notification in SplittBot Settings.')
+    await this.recordAcceptanceCheck('sleepWake', 'blocked', 'A real macOS sleep/wake cycle and catch-up check were recorded. Confirm that you saw the wake notification in Settings.', JSON.stringify(cycle))
+  }
+
+  async confirmWakeNotification(): Promise<void> {
+    const cycle = this.pendingWake
+    if (process.env.SPLITTBOT_TEST_MODE === '1' || !cycle || Date.now() - Date.parse(cycle.resumedAt) > 30 * 60_000) throw new Error('No recent native wake check is awaiting confirmation. Put the Mac to sleep, wake it, and look for the SplittBot wake notification.')
+    if (!cycle.due.length) throw new Error('The Mac wake was recorded, but no catch-up routine became due during sleep. Repeat the supervised test across a scheduled run time.')
+    const attempts = this.store.listRoutineAttempts(1_000)
+    if (!cycle.due.every((due) => attempts.some((attempt) => attempt.routineId === due.routineId && attempt.scheduledFor === due.scheduledFor && attempt.status === 'completed' && attempt.startedAt && Date.parse(attempt.startedAt) >= Date.parse(cycle.resumedAt)))) throw new Error('The wake notification is recorded, but a routine due during sleep has not completed successfully. Review its result, then confirm again within 30 minutes of waking.')
+    this.pendingWake = null
+    await this.recordAcceptanceCheck('sleepWake', 'passed', 'macOS reported a real suspend/resume cycle, routines due during sleep completed after wake, and the user confirmed seeing the wake notification.', JSON.stringify(cycle))
   }
 
   async exerciseIMessageAcceptance(): Promise<void> {
@@ -1235,8 +1283,14 @@ export class CodexService extends EventEmitter {
     try {
       if (!existsSync(helper)) throw new Error('The Local iMessage skill helper is not installed.')
       const run = async (args: string[]): Promise<Record<string, unknown>> => {
-        const result = await execFileAsync('/usr/bin/python3', [helper, ...args], { maxBuffer: 1_000_000 })
-        return JSON.parse(result.stdout) as Record<string, unknown>
+        const result = await execFileAsync('/usr/bin/python3', [helper, ...args], { maxBuffer: 1_000_000, timeout: 20_000 }).catch((error: unknown) => {
+          // The helper deliberately exits nonzero with structured denial details.
+          // Preserve those details instead of showing an opaque Python exit error.
+          const stdout = (error as { stdout?: unknown })?.stdout
+          if (typeof stdout === 'string' && stdout.trim()) return { stdout }
+          throw new Error('The local Messages helper could not run. Check that the skill and Python are installed. No message was sent.')
+        })
+        return parseIMessageResult(result.stdout)
       }
       const status = await run(['status'])
       if (status.ok !== true || status.readable !== true || status.messages_app !== true) throw new Error('Messages is unavailable or its database is not readable by this packaged app.')
@@ -1585,11 +1639,18 @@ export class CodexService extends EventEmitter {
     return this.client.request<AppListResult>('app/list', { cursor: null, limit: 100, forceRefetch: force })
   }
 
-  private async processSchedules(recovering: boolean): Promise<void> {
-    if (this.processingSchedules || this.stopping) return
+  private async processSchedules(recovering: boolean): Promise<boolean> {
+    if (this.processingSchedules || this.stopping) return false
     this.processingSchedules = true
     try {
       const now = new Date()
+      for (const routine of this.store.listRoutines().filter((item) => item.status === 'active' && scheduleHasEnded(item.schedule, now))) {
+        await this.store.setRoutineStatus(routine.id, 'paused')
+        for (const attempt of this.store.listRoutineAttempts(10_000).filter((item) => item.routineId === routine.id && item.status === 'queued')) {
+          await this.store.updateRoutineAttempt(attempt.id, { status: 'missed', retryAt: null, completedAt: now.toISOString(), error: 'The routine stop date has passed.' })
+        }
+        await this.store.addAudit({ type: 'routine.ended', actor: 'system', agentId: routine.agentId, runId: null, summary: `Stopped routine ${routine.title} at its end date`, detail: { stopAfterDate: routine.schedule.stopAfterDate } })
+      }
       if (recovering) {
         const attempts = this.store.listRoutineAttempts(1_000)
         for (const failed of attempts.filter((attempt) => attempt.status === 'failed' && attempt.error?.includes('app restarted'))) {
@@ -1619,9 +1680,11 @@ export class CodexService extends EventEmitter {
         this.track(this.executeRoutineAttempt(routine, scheduledFor, 1))
       }
       this.emitEvent({ type: 'data:changed' })
+      return true
     } catch (error) {
       await this.logger.write('error', 'scheduler.failed', { message: messageOf(error) })
       this.emitEvent({ type: 'runtime:warning', message: `Routine scheduler: ${messageOf(error)}` })
+      return false
     } finally {
       this.processingSchedules = false
     }
@@ -1634,6 +1697,10 @@ export class CodexService extends EventEmitter {
     try {
       const currentRoutine = this.store.getRoutine(routine.id)
       if (!currentRoutine) return
+      if (scheduleHasEnded(currentRoutine.schedule)) {
+        if (attemptId) await this.store.updateRoutineAttempt(attemptId, { status: 'missed', retryAt: null, completedAt: new Date().toISOString(), error: 'The routine stop date has passed.' })
+        return
+      }
       const agent = this.requireAgent(currentRoutine.agentId)
       const startedAt = new Date().toISOString()
       if (attemptId) {
@@ -1699,6 +1766,7 @@ export class CodexService extends EventEmitter {
   }
 
   private validateRoutineInput(input: RoutineInput): void {
+    if (scheduleHasEnded(input.schedule, computeNextRun(input.schedule, new Date()))) throw new Error('The stop date must include at least one future scheduled run.')
     const agent = this.requireAgent(input.agentId)
     if (input.skillPath) {
       if (!agent.grants.allowedSkillPaths.includes(input.skillPath)) throw new Error(`${agent.name} is not granted the selected skill.`)

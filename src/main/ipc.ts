@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { readFile, stat } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { app, dialog, ipcMain, shell } from 'electron'
@@ -53,8 +53,8 @@ const connectorAccountInputSchema = z.object({
   accountIdentifier: z.string().trim().max(254).nullable().optional()
 })
 const scheduleSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('interval'), intervalMinutes: z.number().int().min(1).max(43_200) }),
-  z.object({ kind: z.literal('daily'), timeOfDay: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), daysOfWeek: z.array(z.number().int().min(0).max(6)).max(7) })
+  z.object({ kind: z.literal('interval'), intervalMinutes: z.number().int().min(1).max(43_200), stopAfterDate: z.iso.date().optional() }),
+  z.object({ kind: z.literal('daily'), timeOfDay: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), daysOfWeek: z.array(z.number().int().min(0).max(6)).max(7), stopAfterDate: z.iso.date().optional() })
 ])
 const routineInputSchema = z.object({
   agentId: idSchema,
@@ -236,6 +236,7 @@ export function registerIpc(service: CodexService, system: IpcSystemActions): vo
   ipcMain.handle('acceptance:refreshPermissions', () => service.refreshAcceptancePermissions())
   ipcMain.handle('acceptance:exerciseIMessage', () => service.exerciseIMessageAcceptance())
   ipcMain.handle('acceptance:exerciseWakeCatchUp', () => service.exerciseWakeCatchUp())
+  ipcMain.handle('acceptance:confirmWakeNotification', () => service.confirmWakeNotification())
   ipcMain.handle('artifacts:create', (_event, input) => {
     const parsed = z.object({ agentId: idSchema, runId: idSchema.nullable().optional(), name: z.string().trim().min(1).max(180), content: z.string().min(1).max(1_000_000) }).parse(input)
     return service.createArtifact(parsed)
@@ -320,4 +321,12 @@ export function registerIpc(service: CodexService, system: IpcSystemActions): vo
     shell.showItemInFolder(path)
   })
   ipcMain.handle('app:getVersion', () => app.getVersion())
+  ipcMain.handle('app:revealInstalledApp', () => {
+    if (process.env.SPLITTBOT_TEST_MODE === '1') return
+    if (!app.isPackaged) throw new Error('Use the packaged SplittBot app for Mac permission setup.')
+    shell.showItemInFolder(dirname(dirname(dirname(app.getPath('exe')))))
+  })
+  ipcMain.handle('app:openFullDiskAccess', async () => {
+    if (process.env.SPLITTBOT_TEST_MODE !== '1') await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles')
+  })
 }
