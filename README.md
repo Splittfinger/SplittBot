@@ -6,6 +6,8 @@ SplittBot is a working, standalone Mac application for a team of persistent Code
 
 This repository contains the working Phase 0–6 desktop app, research, and product/technical design:
 
+- [Private beta readiness and remaining release gates](docs/private-beta-readiness.md)
+
 - [Grok Bot research brief](docs/grok-bot-research.md)
 - [SplittBot product and UX design](docs/splittbot-design.md)
 - [Mac + Codex architecture decision](docs/mac-codex-architecture.md)

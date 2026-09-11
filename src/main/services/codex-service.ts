@@ -56,6 +56,7 @@ import { parseAccountUsageResponse, unavailableAccountUsage } from './account-us
 import { listLocalCodexAutomations } from './codex-import'
 import { extractActionsFromOutput, inferManualAction, isMalformedCapturedAction, normalizedActionKey } from './action-extractor'
 import { KeyedSerialQueue } from '../../shared/async-control'
+import { appPolicy, isRecord, withUserToolApprovals } from './tool-policy'
 
 interface ActiveRun {
   runId: string
@@ -224,6 +225,7 @@ export class CodexService extends EventEmitter {
   private readonly startingTurns = new Map<string, Array<{ method: string; params: Record<string, unknown> }>>()
   private stopping = false
   private integrationDiscovery: Promise<IntegrationCatalog> | null = null
+  private appConfigs: Record<string, unknown> = {}
 
   constructor(
     private readonly store: SqliteStore,
@@ -1494,6 +1496,7 @@ export class CodexService extends EventEmitter {
         connectedApps = Array.from(uniqueApps.values()).sort((a, b) => appSortRank(a) - appSortRank(b) || a.name.localeCompare(b.name))
       }
       const config = configResult.status === 'fulfilled' ? configResult.value.config : {}
+      this.appConfigs = isRecord(config.apps) ? config.apps : {}
       const configured = (config.mcp_servers ?? {}) as Record<string, Record<string, unknown>>
       this.connectorConfigs = new Map(Object.entries(configured))
       this.connectorConfigVerified = configResult.status === 'fulfilled'
@@ -2191,10 +2194,21 @@ export class CodexService extends EventEmitter {
     if (!this.connectorConfigVerified) throw new Error('SplittBot could not verify connector access settings. Refresh Tools and try again; no agent turn was started.')
     const accountByRuntimeName = new Map(this.store.listConnectorAccounts().map((account) => [account.runtimeName, account]))
     // Disable inherited apps even when discovery returns an empty catalog.
-    const config: Record<string, unknown> = { apps: { _default: { enabled: false } } }
+    const readOnly = agent.accessMode === 'readOnly'
+    const defaults = appPolicy(isRecord(this.appConfigs._default) ? this.appConfigs._default : {}, false, readOnly)
+    // These overrides exist on individual app entries, not AppsDefaultConfig.
+    delete defaults.tools
+    delete defaults.links
+    // Override every configured app, including ones absent from discovery. A
+    // provider's explicit enabled=true otherwise takes precedence over _default.
+    const apps: Record<string, unknown> = Object.fromEntries(Object.entries(this.appConfigs)
+      .filter(([id]) => id !== '_default')
+      .map(([id, value]) => [id, appPolicy(isRecord(value) ? value : {}, false, readOnly)]))
+    apps._default = defaults
+    const config: Record<string, unknown> = { apps }
     if (this.connectorConfigs.size) {
       config.mcp_servers = Object.fromEntries(Array.from(this.connectorConfigs.entries()).map(([name, connector]) => [name, {
-        ...compactConfig(connector),
+        ...compactConfig(withUserToolApprovals(connector)),
         enabled: GUI_BYPASS_CONNECTORS.has(name)
           ? false
           : accountByRuntimeName.has(name)
@@ -2204,11 +2218,9 @@ export class CodexService extends EventEmitter {
     }
     if (catalog.connectedApps.length) {
       config.features = { apps: true }
-      config.apps = {
-        _default: { enabled: false },
-        ...Object.fromEntries(catalog.connectedApps
-          .filter((app) => app.isAccessible && app.isEnabled && agent.grants.allowedConnectedApps.includes(app.id))
-          .map((app) => [app.id, { enabled: true }]))
+      for (const app of catalog.connectedApps) {
+        apps[app.id] = appPolicy(isRecord(this.appConfigs[app.id]) ? this.appConfigs[app.id] as Record<string, unknown> : {},
+          app.isAccessible && app.isEnabled && agent.grants.allowedConnectedApps.includes(app.id), readOnly)
       }
     }
     return config

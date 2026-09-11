@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from 'node:fs/promises'
+import { appendFile, chmod, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 const SECRET_KEY = /(api[-_]?key|token|authorization|password|secret|cookie|code|credential)/i
@@ -19,8 +19,11 @@ export class JsonLogger {
   constructor(private readonly path: string) {}
 
   async write(level: 'info' | 'warn' | 'error', event: string, detail: unknown = {}): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true })
+    await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })
     const record = JSON.stringify({ at: new Date().toISOString(), level, event, detail: redact(detail) })
-    await appendFile(this.path, `${record}\n`, 'utf8')
+    await appendFile(this.path, `${record}\n`, { encoding: 'utf8', mode: 0o600 })
+    // Upgrade existing logs as well as newly created files. Logs may contain
+    // provider diagnostics even after credential redaction.
+    await chmod(this.path, 0o600)
   }
 }

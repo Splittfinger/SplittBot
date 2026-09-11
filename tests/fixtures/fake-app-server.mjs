@@ -88,7 +88,13 @@ lines.on('line', (line) => {
   if (method === 'mcpServerStatus/list') return send({ id, result: { data: Object.keys(connectorConfig).map((name) => ({ name, pluginId: null, serverInfo: { name: name.startsWith('demo_docs_acct_') ? 'Demo Docs Account' : name === 'demo_docs' ? 'Demo Docs' : name, version: '1.0' }, tools: { search: { name: 'search', description: 'Search approved docs' } }, resources: [], resourceTemplates: [], authStatus: authenticatedConnectors.has(name) ? 'oAuth' : 'notLoggedIn' })), nextCursor: null } })
   if (method === 'config/read') return process.argv.includes('--fail-config')
     ? send({ id, error: { code: -32000, message: 'Configuration unavailable' } })
-    : send({ id, result: { config: { mcp_servers: connectorConfig }, origins: {}, layers: null } })
+    : send({ id, result: { config: { mcp_servers: connectorConfig,
+      ...(process.argv.includes('--inherited-app-access') ? { apps: {
+        _default: { enabled: true, approvals_reviewer: 'auto_review', default_tools_approval_mode: 'approve' },
+        hidden_app: { enabled: true, tools: { publish: { enabled: true, approval_mode: 'approve' } } },
+        connector_outlook_email_fake: { enabled: true, tools: { send: { approval_mode: 'approve' } } }
+      } } : {})
+    }, origins: {}, layers: null } })
   if (method === 'config/value/write') {
     const match = String(params.keyPath || '').match(/^mcp_servers\.([A-Za-z0-9_-]+)(?:\.enabled)?$/)
     if (match) {

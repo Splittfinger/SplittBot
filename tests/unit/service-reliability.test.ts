@@ -75,6 +75,29 @@ describe('service reliability', () => {
     expect(store.getRun(runId)).toMatchObject({ turnId: null, error: expect.stringContaining('could not verify connector access') })
   })
 
+  it('disables inherited apps outside grants and overrides automatic tool approvals on start and resume', async () => {
+    const { service, store, client, agent } = await setup('--inherited-app-access')
+    await store.updateAgent(agent.id, { ...input, grants: { ...input.grants, allowedConnectedApps: ['connector_outlook_email_fake'] } })
+    const configs: Array<Record<string, any>> = []
+    const request = client.request.bind(client)
+    client.request = ((method: string, ...args: [Record<string, unknown>?, number?]) => {
+      if (method === 'thread/start' || method === 'thread/resume') configs.push(args[0]?.config as Record<string, any>)
+      return request(method, ...args)
+    }) as typeof client.request
+    for (const prompt of ['Start with the approved app', 'Resume with the same boundaries']) {
+      const { runId } = await service.startMessage(agent.id, prompt)
+      await until(() => store.getRun(runId)?.status === 'completed')
+    }
+    expect(configs).toHaveLength(2)
+    for (const config of configs) {
+      expect(config.apps._default).toMatchObject({ enabled: false, approvals_reviewer: 'user', default_tools_approval_mode: 'writes' })
+      expect(config.apps.hidden_app.enabled).toBe(false)
+      expect(config.apps.connector_outlook_calendar_fake.enabled).toBe(false)
+      expect(config.apps.connector_outlook_email_fake).toMatchObject({ enabled: true, destructive_enabled: false, tools: { send: { approval_mode: 'writes' } } })
+      expect(config.mcp_servers.demo_docs).toMatchObject({ enabled: false, default_tools_approval_mode: 'writes' })
+    }
+  })
+
   it('does not resurrect a run cancelled while its thread is being prepared', async () => {
     const { service, store, client, agent } = await setup('--slow-thread')
     let starting!: () => void

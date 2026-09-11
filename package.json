@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:codex-live": "tsx scripts/live-codex-smoke.ts",
+    "test:runtime-policy": "tsx scripts/verify-runtime-policy.ts",
     "test:e2e": "npm run build && playwright test",
     "bundle:runtime": "tsx scripts/prepare-codex-runtime.ts",
     "bundle:runtime:universal": "tsx scripts/prepare-codex-runtime.ts --universal",
