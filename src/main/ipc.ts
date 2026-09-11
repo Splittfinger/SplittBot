@@ -13,6 +13,7 @@ const grantsSchema = z.object({
   writableRoots: z.array(z.string()),
   allowedCommands: z.array(z.string()),
   allowedApps: z.array(z.string()),
+  allowedConnectedApps: z.array(z.string().min(1).max(200)),
   allowedConnectors: z.array(z.string().min(1).max(120)),
   allowedConnectorAccounts: z.array(z.string().uuid()),
   allowedSkillPaths: z.array(z.string().startsWith('/')),
@@ -73,6 +74,32 @@ const workspaceInputSchema = z.object({
   memberIds: z.array(idSchema).min(1).max(50),
   autoCoordinate: z.boolean()
 })
+const actionTypeSchema = z.enum(['decision', 'task', 'followUp', 'risk'])
+const actionStatusSchema = z.enum(['inbox', 'next', 'waiting', 'scheduled', 'blocked', 'done', 'dismissed'])
+const actionPrioritySchema = z.enum(['urgent', 'high', 'normal', 'low'])
+const actionCreateSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  summary: z.string().trim().min(1).max(2_000),
+  type: actionTypeSchema,
+  priority: actionPrioritySchema,
+  ownerAgentId: idSchema.nullable().optional(),
+  sourceAgentId: idSchema,
+  sourceRunId: idSchema.nullable().optional(),
+  workspaceId: idSchema.nullable().optional(),
+  dueAt: z.iso.datetime().nullable().optional(),
+  evidence: z.string().trim().max(2_000).nullable().optional()
+})
+const actionUpdateSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  summary: z.string().trim().min(1).max(2_000).optional(),
+  type: actionTypeSchema.optional(),
+  status: actionStatusSchema.optional(),
+  priority: actionPrioritySchema.optional(),
+  ownerAgentId: idSchema.nullable().optional(),
+  workspaceId: idSchema.nullable().optional(),
+  dueAt: z.iso.datetime().nullable().optional(),
+  resolution: z.string().trim().max(2_000).nullable().optional()
+}).refine((value) => Object.keys(value).length > 0, 'At least one action change is required.')
 const memoryPolicySchema = z.object({
   mode: z.enum(['enabled', 'disabled']),
   retentionDays: z.number().int().min(1).max(3_650).nullable()
@@ -97,14 +124,22 @@ export interface IpcSystemActions {
   defaultBackupDirectory: string
   createBackup: (destination: string) => Promise<string>
   restoreBackup: (source: string) => Promise<void>
+  openExternal: (url: string) => Promise<{ browserName: string; forcedBrowser: boolean }>
 }
 
 export function registerIpc(service: CodexService, system: IpcSystemActions): void {
   const selectedChatImages = new Map<string, ResolvedChatImage>()
   ipcMain.handle('snapshot:get', (_event, agentId?: string) => service.getSnapshot(agentId ? idSchema.parse(agentId) : undefined))
+  ipcMain.handle('runs:get', (_event, id) => service.getRun(idSchema.parse(id)))
+  ipcMain.handle('imports:refresh', () => service.refreshImports())
+  ipcMain.handle('imports:add', (_event, candidateKeys) => service.importSources(
+    z.array(z.string().trim().min(1).max(300)).min(1).max(100).refine((values) => new Set(values).size === values.length, 'Selected imports must be unique.').parse(candidateKeys)
+  ))
   ipcMain.handle('agents:create', (_event, input) => service.createAgent(agentInputSchema.parse(input)))
   ipcMain.handle('agents:update', (_event, id, input) => service.updateAgent(idSchema.parse(id), agentInputSchema.parse(input)))
+  ipcMain.handle('agents:setConnectedAppGrant', (_event, id, appId, granted) => service.setAgentConnectedAppGrant(idSchema.parse(id), z.string().trim().min(1).max(200).parse(appId), z.boolean().parse(granted)))
   ipcMain.handle('agents:archive', (_event, id) => service.archiveAgent(idSchema.parse(id)))
+  ipcMain.handle('chat:listMessages', (_event, agentId) => service.listMessages(idSchema.parse(agentId)))
   ipcMain.handle('chat:chooseImages', async () => {
     const paths = process.env.SPLITTBOT_TEST_ATTACHMENT_PATH
       ? [process.env.SPLITTBOT_TEST_ATTACHMENT_PATH]
@@ -144,6 +179,9 @@ export function registerIpc(service: CodexService, system: IpcSystemActions): vo
   ipcMain.handle('approvals:resolve', (_event, approvalId, decision) => service.resolveApproval(idSchema.parse(approvalId), z.enum(['approve', 'decline', 'cancel']).parse(decision)))
   ipcMain.handle('approvals:ask', (_event, approvalId, question) => service.askApprovalQuestion(idSchema.parse(approvalId), z.string().trim().min(1).max(2_000).parse(question)))
   ipcMain.handle('approvals:editAndApprove', (_event, approvalId, input) => service.editAndApproveApproval(idSchema.parse(approvalId), z.string().max(100_000).parse(input)))
+  ipcMain.handle('actions:create', (_event, input) => service.createAction(actionCreateSchema.parse(input)))
+  ipcMain.handle('actions:update', (_event, id, input) => service.updateAction(idSchema.parse(id), actionUpdateSchema.parse(input)))
+  ipcMain.handle('actions:start', (_event, id, recipe) => service.startAction(idSchema.parse(id), z.enum(['recommend', 'investigate', 'draft', 'meeting', 'moveForward']).parse(recipe)))
   ipcMain.handle('workspaces:create', (_event, input) => service.createWorkspace(workspaceInputSchema.parse(input)))
   ipcMain.handle('workspaces:update', (_event, id, input) => service.updateWorkspace(idSchema.parse(id), workspaceInputSchema.parse(input)))
   ipcMain.handle('workspaces:setStatus', (_event, id, status) => service.setWorkspaceStatus(idSchema.parse(id), z.enum(['active', 'completed', 'archived']).parse(status)))
@@ -231,7 +269,7 @@ export function registerIpc(service: CodexService, system: IpcSystemActions): vo
     if (!mime) throw new Error('The selected file is not a valid PNG, JPEG, or WebP picture.')
     return { dataUrl: `data:${mime};base64,${bytes.toString('base64')}` }
   })
-  ipcMain.handle('auth:refresh', () => service.refreshAccount())
+  ipcMain.handle('auth:refresh', () => service.refreshAccount(true))
   ipcMain.handle('auth:signIn', () => service.signIn())
   ipcMain.handle('auth:signOut', () => service.signOut())
   ipcMain.handle('data:createBackup', async () => {
@@ -275,8 +313,7 @@ export function registerIpc(service: CodexService, system: IpcSystemActions): vo
   ipcMain.handle('app:openExternal', async (_event, value) => {
     const url = new URL(z.string().parse(value))
     if (url.protocol !== 'https:') throw new Error('Only HTTPS links may be opened.')
-    if (process.env.SPLITTBOT_TEST_MODE === '1') return
-    await shell.openExternal(url.toString())
+    return system.openExternal(url.toString())
   })
   ipcMain.handle('app:revealPath', (_event, value) => {
     const path = z.string().min(1).parse(value)

@@ -1,15 +1,14 @@
 import { _electron as electron, expect, test } from '@playwright/test'
-import { existsSync, readdirSync } from 'node:fs'
-import { mkdtemp } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+const appBundle = process.env.SPLITTBOT_PACKAGED_APP_PATH || resolve('release', process.arch === 'arm64' ? 'mac-arm64' : 'mac', 'SplittBot.app')
+
 test('packaged and locally signed macOS app launches with isolated renderer', async () => {
-  const appBundle = process.env.SPLITTBOT_PACKAGED_APP_PATH || readdirSync(resolve('release'), { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith('mac'))
-    .map((entry) => resolve('release', entry.name, 'SplittBot.app'))
-    .find(existsSync)
-  expect(appBundle).toBeTruthy()
+  expect(existsSync(appBundle)).toBe(true)
   const executable = join(appBundle!, 'Contents', 'MacOS', 'SplittBot')
   expect(existsSync(join(appBundle!, 'Contents', 'Resources', 'icon.icns'))).toBe(true)
   const dataDirectory = await mkdtemp(join(tmpdir(), 'splittbot-packaged-'))
@@ -33,16 +32,24 @@ test('packaged and locally signed macOS app launches with isolated renderer', as
 })
 
 test('packaged app starts its bundled runtime with no external Codex command', async () => {
-  const appBundle = process.env.SPLITTBOT_PACKAGED_APP_PATH || readdirSync(resolve('release'), { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith('mac'))
-    .map((entry) => resolve('release', entry.name, 'SplittBot.app'))
-    .find(existsSync)
-  expect(appBundle).toBeTruthy()
+  expect(existsSync(appBundle)).toBe(true)
   const executable = join(appBundle!, 'Contents', 'MacOS', 'SplittBot')
   const runtime = join(appBundle!, 'Contents', 'Resources', 'runtime', `darwin-${process.arch}`, 'codex')
+  const codeModeHost = join(appBundle!, 'Contents', 'Resources', 'runtime', `darwin-${process.arch}`, 'codex-code-mode-host')
   const manifest = join(appBundle!, 'Contents', 'Resources', 'runtime', `darwin-${process.arch}`, 'runtime-manifest.json')
   expect(existsSync(runtime)).toBe(true)
+  expect(existsSync(codeModeHost)).toBe(true)
   expect(existsSync(manifest)).toBe(true)
+  const manifestData = JSON.parse(await readFile(manifest, 'utf8')) as { schemaVersion?: number; sha256?: string; bytes?: number; codeModeHost?: { sha256?: string; bytes?: number } }
+  const runtimeBytes = await readFile(runtime)
+  const codeModeHostBytes = await readFile(codeModeHost)
+  expect(manifestData.schemaVersion).toBe(2)
+  expect(manifestData.sha256).toBe(createHash('sha256').update(runtimeBytes).digest('hex'))
+  expect(manifestData.bytes).toBe(runtimeBytes.byteLength)
+  expect(manifestData.codeModeHost).toEqual({
+    sha256: createHash('sha256').update(codeModeHostBytes).digest('hex'),
+    bytes: codeModeHostBytes.byteLength
+  })
   const dataDirectory = await mkdtemp(join(tmpdir(), 'splittbot-standalone-'))
   const application = await electron.launch({
     executablePath: executable,

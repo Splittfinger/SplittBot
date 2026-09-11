@@ -1,5 +1,7 @@
 # SplittBot
 
+Latest maintenance review: [September 8 code review, optimizations, tests, and remaining risks](docs/code-review-2026-09-08.md).
+
 SplittBot is a working, standalone Mac application for a team of persistent Codex agents. Each agent has a name, role, avatar, working instructions, model, AI effort, approved local boundaries, connector-account identities, and a persistent Codex thread.
 
 This repository contains the working Phase 0–6 desktop app, research, and product/technical design:
@@ -15,6 +17,7 @@ This repository contains the working Phase 0–6 desktop app, research, and prod
 - [Phase 5 real-Mac acceptance record](docs/phase-5-acceptance.md)
 - [Phase 6 standalone runtime and account authentication](docs/phase-6-standalone-accounts.md)
 - [Apple 27 interface redesign](docs/apple-27-ui.md)
+- [Purposeful Home shortcuts and result navigation](docs/purposeful-navigation.md)
 
 ## Current implementation
 
@@ -36,7 +39,13 @@ Settings includes a durable real-Mac acceptance dashboard. It distinguishes live
 
 Phase 6 adds account-aware connector authentication. A secure HTTP MCP source can have multiple labeled account identities, each mapped to a distinct internal MCP server name and OAuth credential slot. Agent profiles grant the exact account ID, so two agents can use the same endpoint as different users without reauthenticating on every run. SplittBot stores account labels, optional login identifiers, and grants in SQLite; OAuth tokens remain in the Codex-managed credential store.
 
-Version 0.7 redesigns the product shell around Apple's macOS 27 interface guidance. It adds a labeled, grouped primary sidebar on wide windows, an adaptive icon rail and conditional agent roster at compact widths, system typography, restrained Liquid Glass-style navigation materials, standard reading surfaces, dark appearance, and accessibility fallbacks for reduced motion, reduced transparency, and increased contrast. Existing Phase 0–6 workflows and security boundaries are unchanged.
+The current Tools experience also reads Codex's connected-app catalog and presents provider names and descriptions instead of requiring an MCP endpoint. It separately verifies the installed runtime state, so an app is shown as active only when it is connected and callable. Each app card includes explicit per-Bot grants; a granted app is enabled in that Bot's isolated Codex thread and sent with both its `$app-slug` and typed app mention on every run. Outlook Email and Outlook Calendar open their official browser connection flow, so provider passwords never enter SplittBot. Technical MCP endpoints, transports, local executables, and isolated custom account slots remain available under **Advanced MCP settings**. Scheduled runs can now be created or edited directly inside each Bot profile and continue to use the same awake-only routine engine, catch-up policy, retries, history, and notifications.
+
+Import discovery is user-initiated from **Settings → Import existing agents & tasks** and never interrupts app startup. A selected Codex task becomes a new read-only SplittBot Bot with source-status monitoring and collaboration enabled across the active team. A selected local Codex scheduled task remains owned and executed by Codex; SplittBot monitors it without creating a duplicate schedule. Cloud-only ChatGPT Scheduled tasks and custom GPTs are not exposed by the Codex App Server account protocol, so the app identifies that boundary and leaves those items managed in ChatGPT.
+
+Version 0.7's September glass refresh reimagines the shell with native macOS window vibrancy, floating translucent navigation and controls, a roomier Home view, direct-open agent cards, a searchable conversation-only roster, a hideable details panel, and account usage anchored in primary navigation. Reading surfaces stay quiet and legible. Light/dark appearance, compact windows, reduced motion, reduced transparency, and increased contrast are covered. This is an Electron glass-style implementation, not an AppKit Liquid Glass migration. Existing Phase 0–6 workflows and security boundaries are unchanged; see the [design notes](docs/apple-27-ui.md).
+
+The Action Center turns explicit unresolved agent findings into durable decisions, tasks, follow-ups, and risks. Items retain their source Bot, run, routine, workspace, connector-account identity, evidence, priority, owner, due date, and history across recurring runs. Stable source/account-aware fingerprints update an existing item instead of duplicating it, and a previously completed item is reopened if a later run explicitly raises it again. Users can also capture selected response text manually. From the detail view, bounded actions can ask Atlas for a recommendation, investigate with already-granted sources, draft a next step, prepare a meeting, or prepare to move forward; sending, scheduling, purchasing, submitting, deleting, and other consequential actions remain behind the existing fresh approval flow.
 
 Tagged collaboration is enforced by the app rather than simulated in one prompt. Each receiving agent runs in its own persistent thread with its own selected model, AI effort, working directory, sandbox, grants, and approval flow. SplittBot records the handoff and gives the returned contribution to the primary agent for a final synthesis.
 
@@ -84,11 +93,13 @@ npm run test:codex-live
 - Type `@` in working instructions or chat to select a teammate. Use `@all` to ask every active agent to contribute.
 - Inspect collaboration status in the conversation and durable handoff/audit records.
 - Review skills under Tools before granting them to an agent. An explicit `$skill-name` is rejected unless the skill is enabled, reviewed, and granted.
+- Grant connected ChatGPT apps from the app card under **Tools**. “Active” means Codex reports the app callable; the Bot chip controls which Bot can use it.
 - Grant only the MCP connectors and Apple Shortcuts that agent needs. Shortcut runs always stop in Approvals with the exact text input visible.
 - For two users on one connector, add the secure HTTP source once, create a labeled account identity for each user under **Tools**, complete each browser OAuth flow with the matching user, and grant the exact account identity in each agent profile.
 
 ## Routines and local tools
 
+- The import picker can monitor existing local Codex scheduled tasks without duplicating them. Their original scheduler remains authoritative.
 - Routines can run daily at a local time or at a minute interval.
 - Choose whether a run missed during sleep is skipped or caught up once after wake.
 - Select zero to three persisted retries and completion/failure notification behavior.

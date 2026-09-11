@@ -3,6 +3,7 @@ import type { RoutineSchedule } from '../../shared/contracts'
 export function computeNextRun(schedule: RoutineSchedule, after: Date): Date {
   if (Number.isNaN(after.getTime())) throw new Error('The schedule anchor is invalid.')
   if (schedule.kind === 'interval') {
+    if (!Number.isInteger(schedule.intervalMinutes) || schedule.intervalMinutes < 1) throw new Error('The interval must be a positive number of minutes.')
     return new Date(after.getTime() + schedule.intervalMinutes * 60_000)
   }
 
@@ -18,12 +19,13 @@ export function computeNextRun(schedule: RoutineSchedule, after: Date): Date {
 }
 
 export function nextAfterNow(schedule: RoutineSchedule, prior: string, now: Date): Date {
-  let next = computeNextRun(schedule, new Date(prior))
-  let guard = 0
-  while (next.getTime() <= now.getTime() && guard < 10_000) {
-    next = computeNextRun(schedule, next)
-    guard += 1
+  const anchor = new Date(prior)
+  const firstNext = computeNextRun(schedule, anchor)
+  if (!Number.isFinite(now.getTime())) throw new Error('The recovery time is invalid.')
+  if (firstNext > now) return firstNext
+  if (schedule.kind === 'interval') {
+    const intervalMs = schedule.intervalMinutes * 60_000
+    return new Date(anchor.getTime() + (Math.floor((now.getTime() - anchor.getTime()) / intervalMs) + 1) * intervalMs)
   }
-  if (guard >= 10_000) throw new Error('Schedule advances too frequently to recover safely.')
-  return next
+  return computeNextRun(schedule, now)
 }

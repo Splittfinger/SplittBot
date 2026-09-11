@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import initSqlJs, { type BindParams, type Database } from 'sql.js'
 import type {
   Agent,
@@ -10,6 +10,10 @@ import type {
   AgentMemory,
   AgentMemoryPolicyInput,
   AcceptanceCheck,
+  ActionEvent,
+  ActionEvidence,
+  ActionItem,
+  ActionItemUpdateInput,
   Approval,
   ApprovalStatus,
   Artifact,
@@ -23,6 +27,7 @@ import type {
   GuiSessionStatus,
   Handoff,
   HandoffStatus,
+  ImportedSourceMonitor,
   Message,
   NotificationRecord,
   Run,
@@ -47,6 +52,7 @@ const DEFAULT_GRANTS: AgentGrants = {
   writableRoots: [],
   allowedCommands: [],
   allowedApps: [],
+  allowedConnectedApps: [],
   allowedConnectors: [],
   allowedConnectorAccounts: [],
   allowedSkillPaths: [],
@@ -55,7 +61,8 @@ const DEFAULT_GRANTS: AgentGrants = {
 }
 
 export class SqliteStore {
-  private persistQueue: Promise<void> = Promise.resolve()
+  private persistence: Promise<void> | null = null
+  private revision = 0
 
   private constructor(
     private readonly path: string,
@@ -83,10 +90,14 @@ export class SqliteStore {
     this.db.close()
   }
 
+  async flush(): Promise<void> {
+    await this.persistence
+  }
+
   async createBackup(destination: string): Promise<string> {
     if (this.path === ':memory:') throw new Error('In-memory test databases cannot be backed up.')
     if (resolve(destination) === resolve(this.path)) throw new Error('Choose a backup location other than the active database.')
-    return writePrivateFile(destination, this.db.export())
+    return writePrivateFile(destination, this.exportBytes())
   }
 
   private migrate(): void {
@@ -150,6 +161,37 @@ export class SqliteStore {
         kind TEXT NOT NULL,
         content TEXT NOT NULL,
         path TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS action_items (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        owner_agent_id TEXT,
+        source_agent_id TEXT NOT NULL REFERENCES agents(id),
+        source_run_id TEXT,
+        source_routine_id TEXT,
+        source_account_id TEXT,
+        workspace_id TEXT,
+        due_at TEXT,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        fingerprint TEXT NOT NULL UNIQUE,
+        evidence_json TEXT NOT NULL,
+        resolution TEXT,
+        created_by TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS action_events (
+        id TEXT PRIMARY KEY,
+        action_id TEXT NOT NULL REFERENCES action_items(id),
+        run_id TEXT,
+        actor TEXT NOT NULL,
+        type TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        detail_json TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS audit_events (
@@ -296,10 +338,26 @@ export class SqliteStore {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS imported_sources (
+        source_key TEXT PRIMARY KEY,
+        source_kind TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        target_kind TEXT NOT NULL,
+        target_id TEXT,
+        status TEXT NOT NULL,
+        detail_json TEXT NOT NULL,
+        source_updated_at TEXT,
+        last_seen_at TEXT,
+        created_at TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent_id, started_at);
       CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at);
       CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
+      CREATE INDEX IF NOT EXISTS idx_action_items_status ON action_items(status, priority, due_at);
+      CREATE INDEX IF NOT EXISTS idx_action_items_source ON action_items(source_agent_id, last_seen_at);
+      CREATE INDEX IF NOT EXISTS idx_action_events_action ON action_events(action_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_handoffs_parent ON handoffs(parent_run_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_routines_due ON routines(status, next_run_at);
       CREATE INDEX IF NOT EXISTS idx_routine_attempts_retry ON routine_attempts(status, retry_at);
@@ -309,6 +367,7 @@ export class SqliteStore {
       CREATE INDEX IF NOT EXISTS idx_workspace_events_workspace ON workspace_events(workspace_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_agent_memories_agent ON agent_memories(agent_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_connector_accounts_source ON connector_accounts(connector_name, created_at);
+      CREATE INDEX IF NOT EXISTS idx_imported_sources_kind ON imported_sources(source_kind, created_at);
     `)
     this.ensureColumn('agents', 'reasoning_effort', 'TEXT')
     this.ensureColumn('agents', 'avatar_type', "TEXT NOT NULL DEFAULT 'initials'")
@@ -342,6 +401,15 @@ export class SqliteStore {
       `UPDATE gui_sessions SET status = 'stopped', error = 'The app restarted before this GUI session completed.', completed_at = ? WHERE status IN ('pendingApproval', 'queued', 'running', 'paused')`,
       [now]
     )
+    this.db.run(`UPDATE handoffs SET status = 'failed', error = 'The app restarted before this handoff completed.', completed_at = ? WHERE status IN ('queued', 'running')`, [now])
+    // Only recover waiting items whose latest AI request was interrupted. A user's
+    // ordinary Waiting items must stay waiting after restart.
+    this.db.run(`UPDATE action_items SET status = 'blocked' WHERE status = 'waiting' AND id IN (
+      SELECT e.action_id FROM action_events e JOIN runs r ON r.id = e.run_id
+      WHERE e.type = 'suggestionStarted' AND r.status = 'failed'
+        AND r.error = 'The app restarted before this run completed.'
+        AND e.rowid = (SELECT MAX(latest.rowid) FROM action_events latest WHERE latest.action_id = e.action_id)
+    )`)
   }
 
   private all(sql: string, params: BindParams = []): SqlRow[] {
@@ -362,14 +430,28 @@ export class SqliteStore {
 
   private async persist(): Promise<void> {
     if (this.path === ':memory:') return
-    const operation = this.persistQueue.then(async () => {
-      await mkdir(dirname(this.path), { recursive: true })
-      const temporaryPath = `${this.path}.next`
-      await writeFile(temporaryPath, Buffer.from(this.db.export()))
-      await rename(temporaryPath, this.path)
-    })
-    this.persistQueue = operation.catch(() => undefined)
-    await operation
+    this.revision += 1
+    if (!this.persistence) {
+      this.persistence = Promise.resolve().then(async () => {
+        try {
+          let written: number
+          do {
+            written = this.revision
+            await writePrivateFile(this.path, this.exportBytes())
+          } while (written !== this.revision)
+        } finally {
+          this.persistence = null
+        }
+      })
+    }
+    await this.persistence
+  }
+
+  private exportBytes(): Uint8Array {
+    const bytes = this.db.export()
+    // sql.js reopens the database during export and resets connection pragmas.
+    this.db.run('PRAGMA foreign_keys = ON')
+    return bytes
   }
 
   private async mutate(sql: string, params: BindParams = []): Promise<void> {
@@ -427,6 +509,13 @@ export class SqliteStore {
 
   async setAgentThread(id: string, threadId: string | null): Promise<void> {
     await this.mutate(`UPDATE agents SET thread_id = ?, updated_at = ? WHERE id = ?`, [threadId, new Date().toISOString(), id])
+  }
+
+  async setAgentCollaborators(id: string, collaboratorIds: string[]): Promise<void> {
+    await this.mutate(
+      `UPDATE agents SET collaborator_ids_json = ?, updated_at = ? WHERE id = ?`,
+      [JSON.stringify(Array.from(new Set(collaboratorIds.filter((entry) => entry !== id)))), new Date().toISOString(), id]
+    )
   }
 
   async archiveAgent(id: string): Promise<void> {
@@ -494,9 +583,9 @@ export class SqliteStore {
 
   listMessages(agentId?: string, limit = 300): Message[] {
     const rows = agentId
-      ? this.all(`SELECT * FROM messages WHERE agent_id = ? ORDER BY created_at ASC LIMIT ?`, [agentId, limit])
-      : this.all(`SELECT * FROM messages ORDER BY created_at DESC LIMIT ?`, [limit]).reverse()
-    return rows.map(mapMessage)
+      ? this.all(`SELECT * FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`, [agentId, limit])
+      : this.all(`SELECT * FROM messages ORDER BY created_at DESC, rowid DESC LIMIT ?`, [limit])
+    return rows.reverse().map(mapMessage)
   }
 
   async addMessage(input: Omit<Message, 'id' | 'createdAt'>): Promise<Message> {
@@ -664,6 +753,82 @@ export class SqliteStore {
       [artifact.id, artifact.agentId, artifact.runId, artifact.name, artifact.kind, artifact.content, artifact.path, artifact.createdAt]
     )
     return artifact
+  }
+
+  listActions(limit = 500): ActionItem[] {
+    return this.all(
+      `SELECT * FROM action_items
+       ORDER BY CASE status WHEN 'inbox' THEN 0 WHEN 'blocked' THEN 1 WHEN 'next' THEN 2 WHEN 'waiting' THEN 3 WHEN 'scheduled' THEN 4 ELSE 5 END,
+       CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+       COALESCE(due_at, '9999-12-31T23:59:59.999Z') ASC, last_seen_at DESC LIMIT ?`,
+      [limit]
+    ).map(mapActionItem)
+  }
+
+  getAction(id: string): ActionItem | null {
+    const row = this.one(`SELECT * FROM action_items WHERE id = ?`, [id])
+    return row ? mapActionItem(row) : null
+  }
+
+  getActionByFingerprint(fingerprint: string): ActionItem | null {
+    const row = this.one(`SELECT * FROM action_items WHERE fingerprint = ?`, [fingerprint])
+    return row ? mapActionItem(row) : null
+  }
+
+  async createAction(input: Omit<ActionItem, 'id'>): Promise<ActionItem> {
+    const action: ActionItem = { ...input, id: randomUUID() }
+    await this.mutate(
+      `INSERT INTO action_items (
+        id, title, summary, type, status, priority, owner_agent_id, source_agent_id, source_run_id,
+        source_routine_id, source_account_id, workspace_id, due_at, first_seen_at, last_seen_at,
+        fingerprint, evidence_json, resolution, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        action.id, action.title, action.summary, action.type, action.status, action.priority,
+        action.ownerAgentId, action.sourceAgentId, action.sourceRunId, action.sourceRoutineId,
+        action.sourceAccountId, action.workspaceId, action.dueAt, action.firstSeenAt, action.lastSeenAt,
+        action.fingerprint, JSON.stringify(action.evidence), action.resolution, action.createdBy
+      ]
+    )
+    return action
+  }
+
+  async updateAction(id: string, input: ActionItemUpdateInput & { evidence?: ActionEvidence[]; lastSeenAt?: string; sourceRunId?: string | null }): Promise<ActionItem> {
+    const current = this.getAction(id)
+    if (!current) throw new Error('Action not found.')
+    const next: ActionItem = { ...current, ...input }
+    await this.mutate(
+      `UPDATE action_items SET title = ?, summary = ?, type = ?, status = ?, priority = ?, owner_agent_id = ?,
+       source_run_id = ?, workspace_id = ?, due_at = ?, last_seen_at = ?, evidence_json = ?, resolution = ? WHERE id = ?`,
+      [
+        next.title, next.summary, next.type, next.status, next.priority, next.ownerAgentId,
+        next.sourceRunId, next.workspaceId, next.dueAt, next.lastSeenAt, JSON.stringify(next.evidence), next.resolution, id
+      ]
+    )
+    return this.getAction(id)!
+  }
+
+  listActionEvents(limit = 1_000): ActionEvent[] {
+    return this.all(`SELECT * FROM action_events ORDER BY created_at DESC LIMIT ?`, [limit]).map(mapActionEvent)
+  }
+
+  async addActionEvent(input: Omit<ActionEvent, 'id' | 'createdAt'>): Promise<ActionEvent> {
+    const event: ActionEvent = { ...input, id: randomUUID(), createdAt: new Date().toISOString() }
+    await this.mutate(
+      `INSERT INTO action_events (id, action_id, run_id, actor, type, summary, detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [event.id, event.actionId, event.runId, event.actor, event.type, event.summary, JSON.stringify(event.detail), event.createdAt]
+    )
+    return event
+  }
+
+  getRoutineIdForRun(runId: string): string | null {
+    const row = this.one(`SELECT routine_id FROM routine_attempts WHERE run_id = ? ORDER BY attempt_no DESC LIMIT 1`, [runId])
+    return row ? String(row.routine_id) : null
+  }
+
+  getWorkspaceIdForRun(runId: string): string | null {
+    const row = this.one(`SELECT workspace_id FROM workspace_events WHERE run_id = ? ORDER BY created_at DESC LIMIT 1`, [runId])
+    return row ? String(row.workspace_id) : null
   }
 
   listAudit(limit = 200): AuditEvent[] {
@@ -860,6 +1025,38 @@ export class SqliteStore {
     )
   }
 
+  listImportedSources(): ImportedSourceMonitor[] {
+    return this.all(`SELECT * FROM imported_sources ORDER BY created_at ASC`).map(mapImportedSource)
+  }
+
+  getImportedSource(sourceKey: string): ImportedSourceMonitor | null {
+    const row = this.one(`SELECT * FROM imported_sources WHERE source_key = ?`, [sourceKey])
+    return row ? mapImportedSource(row) : null
+  }
+
+  async createImportedSource(input: Omit<ImportedSourceMonitor, 'createdAt'>): Promise<ImportedSourceMonitor> {
+    const createdAt = new Date().toISOString()
+    await this.mutate(
+      `INSERT INTO imported_sources (source_key, source_kind, source_id, name, target_kind, target_id, status, detail_json, source_updated_at, last_seen_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [input.sourceKey, input.sourceKind, input.sourceId, input.name, input.targetKind, input.targetId, input.status, JSON.stringify(input.detail), input.sourceUpdatedAt, input.lastSeenAt, createdAt]
+    )
+    return this.getImportedSource(input.sourceKey)!
+  }
+
+  async updateImportedSource(
+    sourceKey: string,
+    patch: Partial<Pick<ImportedSourceMonitor, 'name' | 'targetKind' | 'targetId' | 'status' | 'detail' | 'sourceUpdatedAt' | 'lastSeenAt'>>
+  ): Promise<void> {
+    const current = this.getImportedSource(sourceKey)
+    if (!current) throw new Error('Imported source was not found.')
+    const next = { ...current, ...patch }
+    await this.mutate(
+      `UPDATE imported_sources SET name = ?, target_kind = ?, target_id = ?, status = ?, detail_json = ?, source_updated_at = ?, last_seen_at = ? WHERE source_key = ?`,
+      [next.name, next.targetKind, next.targetId, next.status, JSON.stringify(next.detail), next.sourceUpdatedAt, next.lastSeenAt, sourceKey]
+    )
+  }
+
   listGuiSessions(limit = 100): GuiSession[] {
     return this.all(`SELECT * FROM gui_sessions ORDER BY created_at DESC LIMIT ?`, [limit]).map(mapGuiSession)
   }
@@ -999,8 +1196,40 @@ function mapAcceptanceCheck(row: SqlRow): AcceptanceCheck {
   return { key: row.key as AcceptanceCheck['key'], label: String(row.label), status: row.status as AcceptanceCheck['status'], detail: String(row.detail), evidence: row.evidence ? String(row.evidence) : null, checkedAt: row.checked_at ? String(row.checked_at) : null }
 }
 
+function mapImportedSource(row: SqlRow): ImportedSourceMonitor {
+  return {
+    sourceKey: String(row.source_key), sourceKind: row.source_kind as ImportedSourceMonitor['sourceKind'], sourceId: String(row.source_id),
+    name: String(row.name), targetKind: row.target_kind as ImportedSourceMonitor['targetKind'], targetId: row.target_id ? String(row.target_id) : null,
+    status: String(row.status), detail: parseJson(row.detail_json, {}), sourceUpdatedAt: row.source_updated_at ? String(row.source_updated_at) : null,
+    lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : null, createdAt: String(row.created_at)
+  }
+}
+
 function mapArtifact(row: SqlRow): Artifact {
   return { id: String(row.id), agentId: String(row.agent_id), runId: row.run_id ? String(row.run_id) : null, name: String(row.name), kind: row.kind as Artifact['kind'], content: String(row.content), path: row.path ? String(row.path) : null, createdAt: String(row.created_at) }
+}
+
+function mapActionItem(row: SqlRow): ActionItem {
+  return {
+    id: String(row.id), title: String(row.title), summary: String(row.summary), type: row.type as ActionItem['type'],
+    status: row.status as ActionItem['status'], priority: row.priority as ActionItem['priority'],
+    ownerAgentId: row.owner_agent_id ? String(row.owner_agent_id) : null, sourceAgentId: String(row.source_agent_id),
+    sourceRunId: row.source_run_id ? String(row.source_run_id) : null,
+    sourceRoutineId: row.source_routine_id ? String(row.source_routine_id) : null,
+    sourceAccountId: row.source_account_id ? String(row.source_account_id) : null,
+    workspaceId: row.workspace_id ? String(row.workspace_id) : null, dueAt: row.due_at ? String(row.due_at) : null,
+    firstSeenAt: String(row.first_seen_at), lastSeenAt: String(row.last_seen_at), fingerprint: String(row.fingerprint),
+    evidence: parseJson<ActionEvidence[]>(row.evidence_json, []), resolution: row.resolution ? String(row.resolution) : null,
+    createdBy: row.created_by as ActionItem['createdBy']
+  }
+}
+
+function mapActionEvent(row: SqlRow): ActionEvent {
+  return {
+    id: String(row.id), actionId: String(row.action_id), runId: row.run_id ? String(row.run_id) : null,
+    actor: row.actor as ActionEvent['actor'], type: row.type as ActionEvent['type'], summary: String(row.summary),
+    detail: parseJson(row.detail_json, {}), createdAt: String(row.created_at)
+  }
 }
 
 function mapAudit(row: SqlRow): AuditEvent {

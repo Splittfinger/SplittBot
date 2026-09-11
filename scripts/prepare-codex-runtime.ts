@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { access, chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { arch, platform } from 'node:process'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -26,29 +26,52 @@ async function sourceFor(targetArch: 'arm64' | 'x64'): Promise<string> {
   throw new Error(`A ${targetArch} Codex runtime is required. Set SPLITTBOT_CODEX_BUNDLE_SOURCE_${targetArch.toUpperCase()} to an executable supplied for this build.`)
 }
 
+async function codeModeHostSourceFor(source: string, targetArch: 'arm64' | 'x64'): Promise<string> {
+  const archSpecific = process.env[`SPLITTBOT_CODEX_CODE_MODE_HOST_SOURCE_${targetArch.toUpperCase()}`]
+  const generic = process.env.SPLITTBOT_CODEX_CODE_MODE_HOST_SOURCE
+  const candidates = [archSpecific, generic, join(dirname(source), 'codex-code-mode-host')]
+    .filter((value): value is string => Boolean(value))
+  for (const candidate of candidates) if (await executable(candidate)) return candidate
+  throw new Error(`A ${targetArch} Codex code-mode host is required beside the standalone runtime. Set SPLITTBOT_CODEX_CODE_MODE_HOST_SOURCE_${targetArch.toUpperCase()} to the matching executable supplied for this build.`)
+}
+
+async function assertArchitecture(source: string, targetArch: 'arm64' | 'x64'): Promise<void> {
+  const { stdout: sourceArchitectures } = await execFileAsync('/usr/bin/lipo', ['-archs', source], { timeout: 15_000 })
+  if (!sourceArchitectures.trim().split(/\s+/).includes(targetArch === 'x64' ? 'x86_64' : targetArch)) {
+    throw new Error(`The supplied ${targetArch} runtime component does not contain that architecture: ${source}`)
+  }
+}
+
 async function prepare(targetArch: 'arm64' | 'x64'): Promise<Record<string, unknown>> {
   const source = await sourceFor(targetArch)
+  const codeModeHostSource = await codeModeHostSourceFor(source, targetArch)
   const allowTestFixture = process.env.SPLITTBOT_ALLOW_NON_MACHO_RUNTIME === '1'
   if (!allowTestFixture) {
-    const { stdout: sourceArchitectures } = await execFileAsync('/usr/bin/lipo', ['-archs', source], { timeout: 15_000 })
-    if (!sourceArchitectures.trim().split(/\s+/).includes(targetArch)) {
-      throw new Error(`The supplied ${targetArch} runtime does not contain that architecture: ${source}`)
-    }
+    await assertArchitecture(source, targetArch)
+    await assertArchitecture(codeModeHostSource, targetArch)
   }
   const directory = join(outputRoot, `darwin-${targetArch}`)
   const destination = join(directory, 'codex')
+  const codeModeHostDestination = join(directory, 'codex-code-mode-host')
   await mkdir(directory, { recursive: true })
   await copyFile(source, destination)
+  await copyFile(codeModeHostSource, codeModeHostDestination)
   await chmod(destination, 0o755)
+  await chmod(codeModeHostDestination, 0o755)
   const bytes = await readFile(destination)
+  const codeModeHostBytes = await readFile(codeModeHostDestination)
   const { stdout } = await execFileAsync(destination, ['--version'], { timeout: 15_000 })
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     platform: 'darwin',
     arch: targetArch,
     version: stdout.trim(),
     sha256: createHash('sha256').update(bytes).digest('hex'),
     bytes: bytes.byteLength,
+    codeModeHost: {
+      sha256: createHash('sha256').update(codeModeHostBytes).digest('hex'),
+      bytes: codeModeHostBytes.byteLength
+    },
     preparedAt: new Date().toISOString(),
     testFixture: allowTestFixture
   }

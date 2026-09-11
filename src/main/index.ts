@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { mkdir } from 'node:fs/promises'
-import { app, BrowserWindow, dialog, Notification, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeTheme, Notification, shell } from 'electron'
 import { resolveCodexLaunch } from './codex/runtime'
 import { CodexAppServerClient } from './codex/client'
 import { SqliteStore } from './db/store'
@@ -10,13 +10,21 @@ import { DeterministicGuiAdapter, GuiAutomationBroker } from './services/gui-aut
 import { JsonLogger } from './services/logger'
 import { MacGuiAutomationAdapter } from './services/mac-gui-adapter'
 import { restoreSplittBotBackup, validateSplittBotBackup } from './services/data-recovery'
+import { openHttpsInBrowser, type BrowserOpenResult } from './services/external-browser'
 
 let mainWindow: BrowserWindow | null = null
 let service: CodexService | null = null
 let store: SqliteStore | null = null
 let quitting = false
+let reopenWindow: (() => Promise<void>) | null = null
 
 app.setName('SplittBot')
+if (process.env.SPLITTBOT_TEST_MODE === '1' && process.env.SPLITTBOT_DATA_DIR) {
+  // Keep Chromium caches, cookies, and process rendezvous state isolated too—not
+  // only SplittBot's SQLite data. This prevents packaged acceptance runs from
+  // colliding with a real SplittBot window that is already open on the Mac.
+  app.setPath('userData', process.env.SPLITTBOT_DATA_DIR)
+}
 
 async function createApplication(): Promise<void> {
   const dataDirectory = process.env.SPLITTBOT_DATA_DIR || app.getPath('userData')
@@ -30,6 +38,10 @@ async function createApplication(): Promise<void> {
   const client = new CodexAppServerClient(launch, logger)
   const guiAdapter = process.env.SPLITTBOT_TEST_MODE === '1' ? new DeterministicGuiAdapter() : new MacGuiAutomationAdapter()
   const gui = new GuiAutomationBroker(join(dataDirectory, 'gui-evidence'), guiAdapter)
+  const openExternal = async (url: string): Promise<BrowserOpenResult> => {
+    if (process.env.SPLITTBOT_TEST_MODE === '1') return { browserName: 'your browser', forcedBrowser: true }
+    return openHttpsInBrowser(url, { fallback: (fallbackUrl) => shell.openExternal(fallbackUrl) })
+  }
   service = new CodexService(store, client, logger, gui, (title, body) => {
     if (process.env.SPLITTBOT_TEST_MODE !== '1' && Notification.isSupported()) new Notification({ title, body }).show()
   })
@@ -44,6 +56,7 @@ async function createApplication(): Promise<void> {
     restoreBackup: async (source) => {
       await validateSplittBotBackup(source)
       await service?.stop()
+      await store?.flush()
       store?.close()
       try {
         await restoreSplittBotBackup(source, databasePath)
@@ -51,12 +64,22 @@ async function createApplication(): Promise<void> {
         app.relaunch()
         app.exit(0)
       }
-    }
+    },
+    openExternal
   })
   service.on('event', (event) => {
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send('splittbot:event', event)
   })
 
+  reopenWindow = () => createWindow(logger, openExternal)
+  await reopenWindow()
+  void service.start().catch((error) => {
+    void logger.write('error', 'codex.start.failed', { message: error instanceof Error ? error.message : String(error) })
+    mainWindow?.webContents.send('splittbot:event', { type: 'runtime:warning', message: `Codex could not start: ${error instanceof Error ? error.message : String(error)}` })
+  })
+}
+
+async function createWindow(logger: JsonLogger, openExternal: (url: string) => Promise<BrowserOpenResult>): Promise<void> {
   mainWindow = new BrowserWindow({
     width: 1420,
     height: 900,
@@ -65,7 +88,10 @@ async function createApplication(): Promise<void> {
     show: false,
     title: 'SplittBot',
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#f2f2f7',
+    backgroundColor: '#00000000',
+    vibrancy: 'under-window',
+    visualEffectState: 'followWindow',
+    trafficLightPosition: { x: 22, y: 22 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
@@ -75,35 +101,50 @@ async function createApplication(): Promise<void> {
     }
   })
 
+  const window = mainWindow
+  const updateMaterial = (): void => {
+    if (window.isDestroyed()) return
+    const solid = nativeTheme.prefersReducedTransparency || nativeTheme.shouldUseHighContrastColors
+    window.setVibrancy(solid ? null : 'under-window')
+    window.setBackgroundColor(solid ? (nativeTheme.shouldUseDarkColors ? '#171b23' : '#edf1f7') : '#00000000')
+  }
+  updateMaterial()
+  nativeTheme.on('updated', updateMaterial)
+  window.once('closed', () => nativeTheme.off('updated', updateMaterial))
+
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) void shell.openExternal(url)
+    if (url.startsWith('https://')) void openExternal(url).catch((error) => {
+      void logger.write('error', 'browser.open.failed', { message: error instanceof Error ? error.message : String(error) })
+    })
     return { action: 'deny' }
   })
   mainWindow.once('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('closed', () => { mainWindow = null })
 
   if (process.env.ELECTRON_RENDERER_URL) {
     await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
     await mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+}
 
-  void service.start().catch((error) => {
-    void logger.write('error', 'codex.start.failed', { message: error instanceof Error ? error.message : String(error) })
-    mainWindow?.webContents.send('splittbot:event', { type: 'runtime:warning', message: `Codex could not start: ${error instanceof Error ? error.message : String(error)}` })
-  })
+function showApplication(): void {
+  if (quitting) return
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  } else {
+    void reopenWindow?.().catch((error) => dialog.showErrorBox('SplittBot could not open', String(error)))
+  }
 }
 
 const singleInstance = process.env.SPLITTBOT_TEST_MODE === '1' || app.requestSingleInstanceLock()
 if (!singleInstance) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-    }
-  })
+  app.on('second-instance', showApplication)
 
   app.whenReady().then(createApplication).catch((error) => {
     dialog.showErrorBox('SplittBot could not start', error instanceof Error ? error.message : String(error))
@@ -111,9 +152,7 @@ if (!singleInstance) {
   })
 }
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0 && !mainWindow) void createApplication()
-})
+app.on('activate', showApplication)
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
@@ -123,7 +162,12 @@ app.on('before-quit', (event) => {
   if (quitting) return
   event.preventDefault()
   quitting = true
-  void service?.stop().finally(() => {
+  void (async () => {
+    await service?.stop()
+    await store?.flush()
+  })().catch((error) => {
+    console.error('SplittBot shutdown:', error instanceof Error ? error.message : String(error))
+  }).finally(() => {
     store?.close()
     app.quit()
   })

@@ -3,12 +3,19 @@ import type { AppEvent, DesktopApi } from '../shared/contracts'
 
 const api: DesktopApi = {
   bootstrap: (agentId) => ipcRenderer.invoke('snapshot:get', agentId),
+  runs: { get: (id) => ipcRenderer.invoke('runs:get', id) },
+  imports: {
+    refresh: () => ipcRenderer.invoke('imports:refresh'),
+    add: (candidateKeys) => ipcRenderer.invoke('imports:add', candidateKeys)
+  },
   agents: {
     create: (input) => ipcRenderer.invoke('agents:create', input),
     update: (id, input) => ipcRenderer.invoke('agents:update', id, input),
+    setConnectedAppGrant: (id, appId, granted) => ipcRenderer.invoke('agents:setConnectedAppGrant', id, appId, granted),
     archive: (id) => ipcRenderer.invoke('agents:archive', id)
   },
   chat: {
+    listMessages: (agentId) => ipcRenderer.invoke('chat:listMessages', agentId),
     chooseImages: () => ipcRenderer.invoke('chat:chooseImages'),
     send: (agentId, message, attachmentIds) => ipcRenderer.invoke('chat:send', agentId, message, attachmentIds),
     cancel: (runId) => ipcRenderer.invoke('chat:cancel', runId)
@@ -17,6 +24,11 @@ const api: DesktopApi = {
     resolve: (approvalId, decision) => ipcRenderer.invoke('approvals:resolve', approvalId, decision),
     ask: (approvalId, question) => ipcRenderer.invoke('approvals:ask', approvalId, question),
     editAndApprove: (approvalId, input) => ipcRenderer.invoke('approvals:editAndApprove', approvalId, input)
+  },
+  actions: {
+    create: (input) => ipcRenderer.invoke('actions:create', input),
+    update: (id, input) => ipcRenderer.invoke('actions:update', id, input),
+    start: (id, recipe) => ipcRenderer.invoke('actions:start', id, recipe)
   },
   workspaces: {
     create: (input) => ipcRenderer.invoke('workspaces:create', input),

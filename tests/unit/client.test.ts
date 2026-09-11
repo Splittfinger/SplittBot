@@ -6,6 +6,33 @@ import { CodexAppServerClient } from '../../src/main/codex/client'
 import { JsonLogger } from '../../src/main/services/logger'
 
 describe('CodexAppServerClient', () => {
+  it('waits for shared initialization before concurrent callers send requests', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'splittbot-client-start-'))
+    const client = new CodexAppServerClient(
+      { command: process.execPath, argsPrefix: [resolve('tests/fixtures/fake-app-server.mjs'), '--slow-initialize'], source: 'test fixture' },
+      new JsonLogger(join(directory, 'client.jsonl'))
+    )
+    try {
+      await Promise.all(Array.from({ length: 10 }, async () => {
+        await client.start()
+        await expect(client.request('account/read')).resolves.toHaveProperty('account.type', 'chatgpt')
+      }))
+    } finally { await client.stop() }
+  })
+
+  it('cleans up failed launches and allows a clean retry', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'splittbot-client-failed-'))
+    const client = new CodexAppServerClient(
+      { command: join(directory, 'does-not-exist'), argsPrefix: [], source: 'test fixture' },
+      new JsonLogger(join(directory, 'client.jsonl')), 1_000
+    )
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(client.start()).rejects.toThrow(/ENOENT|EPIPE/)
+      expect(client.running).toBe(false)
+    }
+    await client.stop()
+  })
+
   it('initializes, streams a turn, handles approval, and resumes after restart', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'splittbot-client-'))
     const client = new CodexAppServerClient(

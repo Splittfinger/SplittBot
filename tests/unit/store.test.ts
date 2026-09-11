@@ -1,28 +1,68 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { SqliteStore } from '../../src/main/db/store'
+import * as privateFiles from '../../src/main/services/data-recovery'
 
-const grants = { readableRoots: ['/tmp'], writableRoots: [], allowedCommands: [], allowedApps: [], allowedConnectors: [], allowedConnectorAccounts: [], allowedSkillPaths: [], allowedShortcuts: [], networkAccess: false }
+const grants = { readableRoots: ['/tmp'], writableRoots: [], allowedCommands: [], allowedApps: [], allowedConnectedApps: [], allowedConnectors: [], allowedConnectorAccounts: [], allowedSkillPaths: [], allowedShortcuts: [], networkAccess: false }
 
 describe('SqliteStore', () => {
+  it('returns the newest history window in chronological order', async () => {
+    const store = await SqliteStore.open(':memory:')
+    const agent = await store.createAgent({ name: 'Atlas', role: 'Assistant', instructions: 'Help safely.', color: '#16876f', model: null, reasoningEffort: null, avatar: { type: 'initials', value: null }, collaboratorIds: [], cwd: '/tmp', accessMode: 'readOnly', grants })
+    for (let index = 0; index < 320; index += 1) await store.addMessage({ agentId: agent.id, runId: null, role: 'user', kind: 'text', content: `Message ${index}` })
+    expect(store.listMessages(agent.id).map((message) => message.content)).toEqual(Array.from({ length: 300 }, (_, index) => `Message ${index + 20}`))
+    expect(store.listMessages(undefined, 2).map((message) => message.content)).toEqual(['Message 318', 'Message 319'])
+    store.close()
+  })
+
   it('serializes concurrent disk persistence without losing writes', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'splittbot-store-concurrent-'))
     const path = join(directory, 'state.sqlite')
     let store = await SqliteStore.open(path)
     const agent = await store.createAgent({ name: 'Atlas', role: 'Chief of Staff', instructions: 'Coordinate safely.', color: '#7657d8', model: null, reasoningEffort: null, avatar: { type: 'initials', value: null }, collaboratorIds: [], cwd: '/tmp', accessMode: 'readOnly', grants })
+    const writes = vi.spyOn(privateFiles, 'writePrivateFile')
     await Promise.all(Array.from({ length: 20 }, async (_, index) => {
       await Promise.all([
         store.addMessage({ agentId: agent.id, runId: null, role: 'system', kind: 'status', content: `Concurrent message ${index}` }),
         store.addAudit({ type: 'concurrent.test', actor: 'system', agentId: agent.id, runId: null, summary: `Concurrent audit ${index}`, detail: { index } })
       ])
     }))
+    // Forty logical mutations share the same flush instead of forty full exports.
+    const writeCount = writes.mock.calls.length
+    writes.mockRestore()
+    expect(writeCount).toBeLessThanOrEqual(2)
     store.close()
 
     store = await SqliteStore.open(path)
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
     expect(store.listMessages(agent.id)).toHaveLength(20)
     expect(store.listAudit().filter((event) => event.type === 'concurrent.test')).toHaveLength(20)
+    // Exporting must not silently turn off relational integrity.
+    await expect(store.addMessage({ agentId: crypto.randomUUID(), runId: null, role: 'user', kind: 'text', content: 'Invalid agent' })).rejects.toThrow('FOREIGN KEY')
+    store.close()
+  })
+
+  it('recovers interrupted handoffs and AI follow-ups without changing ordinary waiting actions', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'splittbot-store-recovery-'))
+    const path = join(directory, 'state.sqlite')
+    let store = await SqliteStore.open(path)
+    const agent = await store.createAgent({ name: 'Atlas', role: 'Assistant', instructions: 'Help safely.', color: '#16876f', model: null, reasoningEffort: null, avatar: { type: 'initials', value: null }, collaboratorIds: [], cwd: '/tmp', accessMode: 'readOnly', grants })
+    const run = await store.createRun(agent.id, 'Unfinished task')
+    const handoff = await store.createHandoff({ parentRunId: run.id, fromAgentId: agent.id, toAgentId: agent.id, prompt: 'Unfinished handoff' })
+    const now = new Date().toISOString()
+    const actionIds: string[] = []
+    for (const fingerprint of ['ai-follow-up', 'ordinary-waiting']) {
+      const action = await store.createAction({ title: 'Review a document', summary: 'Review the latest document.', type: 'task', status: 'waiting', priority: 'normal', ownerAgentId: null, sourceAgentId: agent.id, sourceRunId: null, sourceRoutineId: null, sourceAccountId: null, workspaceId: null, dueAt: null, firstSeenAt: now, lastSeenAt: now, fingerprint, evidence: [], resolution: null, createdBy: 'user' })
+      actionIds.push(action.id)
+      if (fingerprint === 'ai-follow-up') await store.addActionEvent({ actionId: action.id, runId: run.id, actor: 'user', type: 'suggestionStarted', summary: 'Requested AI follow-up', detail: {} })
+    }
+    store.close()
+    store = await SqliteStore.open(path)
+    expect(store.listHandoffs().find((item) => item.id === handoff.id)?.status).toBe('failed')
+    expect(store.getAction(actionIds[0]!)?.status).toBe('blocked')
+    expect(store.getAction(actionIds[1]!)?.status).toBe('waiting')
     store.close()
   })
 
@@ -54,6 +94,23 @@ describe('SqliteStore', () => {
     await store.updateGuiSession(guiSession.id, { status: 'completed', currentStep: 2, startedAt: '2026-08-21T14:00:00.000Z', completedAt: '2026-08-21T14:00:01.000Z' })
     await store.createGuiEvidence({ sessionId: guiSession.id, kind: 'after', stepIndex: 1, summary: 'Verified Preview', path: '/tmp/preview.png' })
     await store.setGuiEmergencyStopped(true)
+    await store.createImportedSource({
+      sourceKey: 'codexThread:thr_marketing', sourceKind: 'codexThread', sourceId: 'thr_marketing', name: 'Marketing Agent',
+      targetKind: 'agent', targetId: agent.id, status: 'available', detail: { summary: 'Draft a campaign brief.' },
+      sourceUpdatedAt: '2026-08-21T14:00:00.000Z', lastSeenAt: '2026-08-21T14:01:00.000Z'
+    })
+    await store.updateImportedSource('codexThread:thr_marketing', { status: 'notLoaded', lastSeenAt: '2026-08-21T14:02:00.000Z' })
+    await store.setAgentCollaborators(agent.id, [agent.id, atlas.id, atlas.id])
+    const action = await store.createAction({
+      title: 'Decide whether the invoice is valid', summary: 'The mailbox run found an invoice that needs a decision.',
+      type: 'decision', status: 'inbox', priority: 'high', ownerAgentId: atlas.id, sourceAgentId: agent.id,
+      sourceRunId: run.id, sourceRoutineId: routine.id, sourceAccountId: connectorAccount.id, workspaceId: workspace.id,
+      dueAt: null, firstSeenAt: '2026-08-21T14:01:00.000Z', lastSeenAt: '2026-08-21T14:01:00.000Z',
+      fingerprint: 'invoice-fingerprint', evidence: [{ runId: run.id, excerpt: 'Invoice needs a decision.', observedAt: '2026-08-21T14:01:00.000Z' }],
+      resolution: null, createdBy: 'agent'
+    })
+    await store.addActionEvent({ actionId: action.id, runId: run.id, actor: 'agent', type: 'created', summary: 'Captured from a completed result', detail: { priority: 'high' } })
+    await store.updateAction(action.id, { status: 'next', dueAt: '2026-08-22T17:00:00.000Z' })
     store.close()
 
     store = await SqliteStore.open(path)
@@ -78,6 +135,12 @@ describe('SqliteStore', () => {
     expect(store.getAgent(agent.id)?.grants.allowedConnectorAccounts).toEqual([connectorAccount.id])
     expect(store.listAcceptanceChecks()[0]).toMatchObject({ key: 'permissions', status: 'blocked' })
     expect(store.isGuiEmergencyStopped()).toBe(true)
+    expect(store.listImportedSources()[0]).toMatchObject({ sourceKey: 'codexThread:thr_marketing', targetId: agent.id, status: 'notLoaded', detail: { summary: 'Draft a campaign brief.' } })
+    expect(store.getAgent(agent.id)?.collaboratorIds).toEqual([atlas.id])
+    expect(store.listActions()[0]).toMatchObject({ id: action.id, status: 'next', type: 'decision', priority: 'high', ownerAgentId: atlas.id, sourceRoutineId: routine.id, evidence: [{ excerpt: 'Invoice needs a decision.' }] })
+    expect(store.listActionEvents()[0]).toMatchObject({ actionId: action.id, type: 'created' })
+    expect(store.getRoutineIdForRun(run.id)).toBe(routine.id)
+    expect(store.getWorkspaceIdForRun(run.id)).toBe(workspace.id)
     await store.deleteRoutine(routine.id)
     expect(store.listRoutines()).toHaveLength(0)
     expect(store.listRoutineAttempts()).toHaveLength(0)

@@ -24,6 +24,25 @@ function hooks(events: { statuses: string[]; evidence: Array<{ kind: GuiEvidence
 }
 
 describe('GuiAutomationBroker', () => {
+  it('reserves the GUI lane before asynchronous permission checks and respects an early stop', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'splittbot-gui-permissions-'))
+    let release!: () => void
+    const permissionGate = new Promise<void>((done) => { release = done })
+    class DelayedPermissions extends DeterministicGuiAdapter {
+      override async getPermissions() { await permissionGate; return super.getPermissions() }
+    }
+    const adapter = new DelayedPermissions()
+    const broker = new GuiAutomationBroker(directory, adapter)
+    const events = { statuses: [] as string[], evidence: [] as Array<{ kind: GuiEvidenceKind; path: string }>, retries: [] as number[] }
+    const first = broker.execute(session([{ type: 'activateApp' }]), 0, hooks(events))
+    await expect(broker.execute(session([{ type: 'activateApp' }]), 0, hooks(events))).rejects.toThrow('already owned')
+    broker.emergencyStop()
+    release()
+    await expect(first).resolves.toMatchObject({ status: 'stopped' })
+    expect(adapter.executed).toHaveLength(0)
+    expect(broker.activeSessionId).toBeNull()
+  })
+
   it('treats prompt-injection text literally, pauses for focus and modals, and records private evidence', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'splittbot-gui-'))
     class HazardAdapter extends DeterministicGuiAdapter {

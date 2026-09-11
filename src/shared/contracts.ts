@@ -8,6 +8,7 @@ export interface AgentGrants {
   writableRoots: string[]
   allowedCommands: string[]
   allowedApps: string[]
+  allowedConnectedApps: string[]
   allowedConnectors: string[]
   allowedConnectorAccounts: string[]
   allowedSkillPaths: string[]
@@ -120,6 +121,75 @@ export interface Artifact {
   createdAt: string
 }
 
+export type ActionItemType = 'decision' | 'task' | 'followUp' | 'risk'
+export type ActionItemStatus = 'inbox' | 'next' | 'waiting' | 'scheduled' | 'blocked' | 'done' | 'dismissed'
+export type ActionItemPriority = 'urgent' | 'high' | 'normal' | 'low'
+export type ActionRecipe = 'recommend' | 'investigate' | 'draft' | 'meeting' | 'moveForward'
+
+export interface ActionEvidence {
+  runId: string | null
+  excerpt: string
+  observedAt: string
+}
+
+export interface ActionItem {
+  id: string
+  title: string
+  summary: string
+  type: ActionItemType
+  status: ActionItemStatus
+  priority: ActionItemPriority
+  ownerAgentId: string | null
+  sourceAgentId: string
+  sourceRunId: string | null
+  sourceRoutineId: string | null
+  sourceAccountId: string | null
+  workspaceId: string | null
+  dueAt: string | null
+  firstSeenAt: string
+  lastSeenAt: string
+  fingerprint: string
+  evidence: ActionEvidence[]
+  resolution: string | null
+  createdBy: 'agent' | 'user'
+}
+
+export interface ActionItemCreateInput {
+  title: string
+  summary: string
+  type: ActionItemType
+  priority: ActionItemPriority
+  ownerAgentId?: string | null
+  sourceAgentId: string
+  sourceRunId?: string | null
+  workspaceId?: string | null
+  dueAt?: string | null
+  evidence?: string | null
+}
+
+export interface ActionItemUpdateInput {
+  title?: string
+  summary?: string
+  type?: ActionItemType
+  status?: ActionItemStatus
+  priority?: ActionItemPriority
+  ownerAgentId?: string | null
+  workspaceId?: string | null
+  dueAt?: string | null
+  resolution?: string | null
+}
+
+export interface ActionEvent {
+  id: string
+  actionId: string
+  runId: string | null
+  actor: 'user' | 'agent' | 'system'
+  type: 'created' | 'observed' | 'updated' | 'assigned' | 'statusChanged' | 'suggestionStarted' | 'resolved' | 'dismissed' | 'reopened'
+  summary: string
+  detail: Record<string, unknown>
+  createdAt: string
+}
+
 export interface AuditEvent {
   id: string
   type: string
@@ -155,6 +225,37 @@ export interface CodexModel {
   supportedReasoningEfforts: string[]
 }
 
+export interface AccountUsageWindow {
+  usedPercent: number
+  windowDurationMinutes: number | null
+  resetsAt: number | null
+}
+
+export interface AccountUsageCredits {
+  hasCredits: boolean
+  unlimited: boolean
+  balance: string | null
+}
+
+export interface AccountUsageBucket {
+  id: string
+  name: string | null
+  planType: string | null
+  primary: AccountUsageWindow | null
+  secondary: AccountUsageWindow | null
+  credits: AccountUsageCredits | null
+  limitReachedReason: string | null
+  spendControlReached: boolean | null
+}
+
+export interface AccountUsageStatus {
+  state: 'available' | 'unavailable'
+  buckets: AccountUsageBucket[]
+  resetCreditsAvailable: number | null
+  fetchedAt: string | null
+  error: string | null
+}
+
 export interface AccountStatus {
   state: 'authenticated' | 'signedOut' | 'unavailable'
   authMode: string | null
@@ -165,6 +266,7 @@ export interface AccountStatus {
   runtimeVersion: string | null
   runtimeBundled: boolean
   runtimeHome: string | null
+  usage: AccountUsageStatus
   error: string | null
 }
 
@@ -184,6 +286,19 @@ export interface Connector {
   endpoint: string | null
   args: string[]
   error: string | null
+}
+
+export interface ConnectedApp {
+  id: string
+  name: string
+  slug: string
+  description: string
+  installUrl: string | null
+  isAccessible: boolean
+  isEnabled: boolean
+  runtimeName: string | null
+  runtimeEnabled: boolean
+  callable: boolean
 }
 
 export type ConnectorInput =
@@ -345,6 +460,48 @@ export interface LocalShortcut {
   grantedAgentCount: number
 }
 
+export type ImportSourceKind = 'codexThread' | 'codexAutomation'
+
+export interface ImportCandidate {
+  key: string
+  sourceKind: ImportSourceKind
+  sourceId: string
+  name: string
+  summary: string
+  status: string
+  cwd: string | null
+  model: string | null
+  updatedAt: string | null
+  scheduleLabel: string | null
+  targetThreadId: string | null
+}
+
+export interface ImportedSourceMonitor {
+  sourceKey: string
+  sourceKind: ImportSourceKind
+  sourceId: string
+  name: string
+  targetKind: 'agent' | 'monitor'
+  targetId: string | null
+  status: string
+  detail: Record<string, unknown>
+  sourceUpdatedAt: string | null
+  lastSeenAt: string | null
+  createdAt: string
+}
+
+export interface ImportCatalog {
+  candidates: ImportCandidate[]
+  monitored: ImportedSourceMonitor[]
+  checkedAt: string | null
+  sourceHome: string
+  cloudScheduledTasks: {
+    state: 'notExposed'
+    detail: string
+  }
+  error: string | null
+}
+
 export type GuiPermissionValue = 'granted' | 'denied' | 'notDetermined' | 'restricted' | 'unavailable'
 
 export interface GuiPermissions {
@@ -419,7 +576,10 @@ export interface AppSnapshot {
   workspaceEvents: WorkspaceEvent[]
   approvals: Approval[]
   artifacts: Artifact[]
+  actions: ActionItem[]
+  actionEvents: ActionEvent[]
   audit: AuditEvent[]
+  connectedApps: ConnectedApp[]
   connectors: Connector[]
   connectorAccounts: ConnectorAccount[]
   skills: SkillCatalogItem[]
@@ -429,6 +589,7 @@ export interface AppSnapshot {
   notifications: NotificationRecord[]
   memories: AgentMemory[]
   acceptance: AcceptanceCheck[]
+  imports: ImportCatalog
   gui: GuiControlSnapshot
   integrationError: string | null
 }
@@ -446,12 +607,15 @@ export type AppEvent =
 
 export interface DesktopApi {
   bootstrap: (agentId?: string) => Promise<AppSnapshot>
+  runs: { get: (id: string) => Promise<Run | null> }
   agents: {
     create: (input: AgentInput) => Promise<Agent>
     update: (id: string, input: AgentInput) => Promise<Agent>
+    setConnectedAppGrant: (id: string, appId: string, granted: boolean) => Promise<Agent>
     archive: (id: string) => Promise<void>
   }
   chat: {
+    listMessages: (agentId: string) => Promise<Message[]>
     chooseImages: () => Promise<ChatImageAttachment[]>
     send: (agentId: string, message: string, attachmentIds?: string[]) => Promise<{ runId: string }>
     cancel: (runId: string) => Promise<void>
@@ -460,6 +624,11 @@ export interface DesktopApi {
     resolve: (approvalId: string, decision: 'approve' | 'decline' | 'cancel') => Promise<void>
     ask: (approvalId: string, question: string) => Promise<void>
     editAndApprove: (approvalId: string, input: string) => Promise<void>
+  }
+  actions: {
+    create: (input: ActionItemCreateInput) => Promise<ActionItem>
+    update: (id: string, input: ActionItemUpdateInput) => Promise<ActionItem>
+    start: (id: string, recipe: ActionRecipe) => Promise<{ runId: string; agentId: string }>
   }
   connectors: {
     refresh: () => Promise<void>
@@ -499,6 +668,10 @@ export interface DesktopApi {
     setStatus: (id: string, status: RoutineStatus) => Promise<void>
     runNow: (id: string) => Promise<void>
     delete: (id: string) => Promise<void>
+  }
+  imports: {
+    refresh: () => Promise<ImportCatalog>
+    add: (candidateKeys: string[]) => Promise<ImportCatalog>
   }
   notifications: {
     markRead: (id: string) => Promise<void>
@@ -542,7 +715,7 @@ export interface DesktopApi {
     revealLocalData: () => Promise<void>
   }
   app: {
-    openExternal: (url: string) => Promise<void>
+    openExternal: (url: string) => Promise<{ browserName: string; forcedBrowser: boolean }>
     revealPath: (path: string) => Promise<void>
     getVersion: () => Promise<string>
   }

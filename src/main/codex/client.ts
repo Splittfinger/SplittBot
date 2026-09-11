@@ -32,6 +32,7 @@ export class CodexAppServerClient extends EventEmitter {
   private pending = new Map<RpcId, PendingRequest>()
   private serverRequestHandler: ServerRequestHandler | null = null
   private stopping = false
+  private starting: Promise<void> | null = null
 
   constructor(
     readonly launch: CodexLaunch,
@@ -49,7 +50,20 @@ export class CodexAppServerClient extends EventEmitter {
     this.serverRequestHandler = handler
   }
 
-  async start(): Promise<void> {
+  start(): Promise<void> {
+    if (this.starting) return this.starting
+    if (this.running) return Promise.resolve()
+    const starting = this.initialize().catch(async (error) => {
+      await this.stop()
+      throw error
+    }).finally(() => {
+      if (this.starting === starting) this.starting = null
+    })
+    this.starting = starting
+    return starting
+  }
+
+  private async initialize(): Promise<void> {
     if (this.running) return
     this.stopping = false
     const args = [...this.launch.argsPrefix, 'app-server', '--listen', 'stdio://']
@@ -63,11 +77,14 @@ export class CodexAppServerClient extends EventEmitter {
       const message = chunk.toString('utf8').trim()
       if (message) void this.logger.write('warn', 'codex.stderr', { message })
     })
-    this.child.on('error', (error) => this.handleExit(error))
-    this.child.on('exit', (code, signal) => this.handleExit(new Error(`Codex App Server exited (${code ?? signal ?? 'unknown'}).`)))
+    const child = this.child
+    child.stdin.on('error', (error) => this.handleExit(child, error))
+    child.on('error', (error) => this.handleExit(child, error))
+    child.on('exit', (code, signal) => this.handleExit(child, new Error(`Codex App Server exited (${code ?? signal ?? 'unknown'}).`)))
 
     await this.request('initialize', {
-      clientInfo: { name: 'splittbot', title: 'SplittBot', version: packageMetadata.version }
+      clientInfo: { name: 'splittbot', title: 'SplittBot', version: packageMetadata.version },
+      capabilities: { experimentalApi: true }
     })
     this.notify('initialized', {})
     await this.logger.write('info', 'codex.started', { source: this.launch.source, bundled: Boolean(this.launch.bundled) })
@@ -114,7 +131,13 @@ export class CodexAppServerClient extends EventEmitter {
         reject(new Error(`Codex request timed out: ${method}`))
       }, timeoutMs)
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer })
-      this.write({ method, id, params })
+      try {
+        this.write({ method, id, params })
+      } catch (error) {
+        clearTimeout(timer)
+        this.pending.delete(id)
+        reject(error)
+      }
     })
   }
 
@@ -124,7 +147,11 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   private write(message: JsonObject): void {
-    this.child?.stdin.write(`${JSON.stringify(message)}\n`)
+    const child = this.child
+    if (!child || child.stdin.destroyed || !child.stdin.writable) throw new Error('Codex App Server input is closed.')
+    child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
+      if (error) this.handleExit(child, error)
+    })
   }
 
   private handleLine(line: string): void {
@@ -163,18 +190,25 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   private async handleServerRequest(id: RpcId, method: string, params: JsonObject): Promise<void> {
+    const child = this.child
     try {
       if (!this.serverRequestHandler) throw new RpcError(`Unsupported server request: ${method}`, -32601)
       const result = await this.serverRequestHandler(method, params, id)
-      this.write({ id, result })
+      if (child === this.child && this.running) this.write({ id, result })
     } catch (error) {
       const rpcError = error instanceof RpcError ? error : new RpcError(error instanceof Error ? error.message : String(error))
-      this.write({ id, error: { code: rpcError.code, message: rpcError.message, data: rpcError.data } })
+      if (child === this.child && this.running) {
+        try { this.write({ id, error: { code: rpcError.code, message: rpcError.message, data: rpcError.data } }) } catch { /* The transport already closed. */ }
+      }
     }
   }
 
-  private handleExit(error: Error): void {
-    if (this.stopping) return
+  private handleExit(child: ChildProcessWithoutNullStreams, error: Error): void {
+    if (child !== this.child || this.stopping) return
+    this.child = null
+    this.lines?.close()
+    this.lines = null
+    if (child.exitCode === null) child.kill('SIGTERM')
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer)
       pending.reject(error)

@@ -113,16 +113,17 @@ export class GuiAutomationBroker {
   async execute(session: GuiSession, maxRetries: number, hooks: GuiExecutionHooks): Promise<GuiExecutionResult> {
     if (this.emergencyStopped) throw new Error('GUI control is emergency-stopped. Reset it before starting another session.')
     if (this.active) throw new Error(`The GUI lane is already owned by session ${this.active.sessionId}.`)
-    const permissions = await this.adapter.getPermissions()
-    if (permissions.accessibility !== 'granted' || permissions.screenRecording !== 'granted') {
-      throw new Error('Accessibility and Screen Recording permissions are both required before GUI control can start.')
-    }
     if (session.steps[0]?.type !== 'activateApp') throw new Error('A GUI plan must begin by activating its approved target app.')
 
     this.active = { sessionId: session.id, targetApp: session.targetApp, paused: false, stopReason: null, wake: null }
-    await mkdir(join(this.evidenceRoot, session.id), { recursive: true, mode: 0o700 })
 
     try {
+      const permissions = await this.adapter.getPermissions()
+      if (permissions.accessibility !== 'granted' || permissions.screenRecording !== 'granted') {
+        throw new Error('Accessibility and Screen Recording permissions are both required before GUI control can start.')
+      }
+      await this.waitUntilRunnable()
+      await mkdir(join(this.evidenceRoot, session.id), { recursive: true, mode: 0o700 })
       await hooks.onProgress('running', { currentStep: 0, pauseReason: null, error: null })
       for (let index = 0; index < session.steps.length; index += 1) {
         const step = session.steps[index]!
