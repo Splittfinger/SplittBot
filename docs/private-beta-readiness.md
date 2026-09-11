@@ -25,7 +25,7 @@ The OpenAI Docs skill informed the policy changes, using the [official configura
 | --- | --- |
 | Type checking and production build | Passed. |
 | Automated unit tests | 62 passed, including 5 new policy/privacy regression cases. |
-| Electron desktop tests | 9 passed with isolated data and a deterministic runtime. |
+| Electron desktop tests | 9 passed with isolated data and a deterministic runtime; a subsequent two-pass repeat also passed all 18 executions after the host-display and collaboration-selector fixes. |
 | Installed packaged tests | 2 passed: isolated renderer and bundled runtime with no external Codex command. |
 | Real runtime policy protocol | Passed separately; no login, model turn, or external tool execution. |
 | Production dependency audit | 0 known vulnerabilities reported by `npm audit --omit=dev`. This is not a penetration test. |
@@ -37,7 +37,7 @@ The OpenAI Docs skill informed the policy changes, using the [official configura
 | Durable Actions | Existing open item, owner, due date, resolution note, and prior evidence survived restart. No invented Actions were generated from the empty email sample. |
 | Live Ask Atlas | Invoked the existing Action's recommendation option. Atlas returned guidance to that item, retained the existing user note, and moved it to Next—not Done. No external action was approved or performed. |
 | Backup | Created through Settings; integrity check returned `ok`; file mode was `0600`. Restore remains covered using isolated test data, not performed over the user's live desk. |
-| Remote CI | Pending this branch's final checkpoint. |
+| Remote CI | [GitHub Verify passed](https://github.com/Splittfinger/SplittBot/actions/runs/34641503944) for implementation and tests at `ed9d6fc`: audit, type checking, 62 unit tests, 9 desktop tests, Mac packaging/signature, and 2 packaged tests. CI bundles deterministic fixtures, not authenticated production runtime binaries. The final follow-up commit updates only this evidence document. |
 
 ## Gates still open
 
