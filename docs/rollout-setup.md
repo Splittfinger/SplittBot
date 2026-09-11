@@ -6,6 +6,8 @@ Updated September 11, 2026. This is a setup runbook, not a declaration that live
 
 The rollout update passed type checking, production build, 69 unit tests, 10 isolated desktop tests, and 2 isolated packaged tests. A stale test selector exposed by renaming the wake-test button was corrected and the complete desktop suite rerun successfully. The final staged Apple Silicon bundle was locally signed and its signature verified. Its real bundled runtime separately accepted the hardened app/account/MCP configuration without login, a model turn, or external tools. Production dependency audit reported zero known vulnerabilities. These are local checks; the updated bundle is staged, not yet installed over the user's running app.
 
+[GitHub Verify also passed](https://github.com/Splittfinger/SplittBot/actions/runs/34645585946) for implementation commit `1fbe9ce6b10dc8e830f632d3db461e8fa24b366a`: audit, type checking, unit and desktop suites, packaging/signature, and packaged tests. Hosted CI uses deterministic runtime fixtures, not production credentials. The follow-up commit only records this result.
+
 A 09:30 local-time Codex review heartbeat was created **paused**. It must not be activated until the native 09:00 pilot schedule is actually configured and verified. Neither the pilot nor its review is currently running.
 
 ## Mac permission repair
